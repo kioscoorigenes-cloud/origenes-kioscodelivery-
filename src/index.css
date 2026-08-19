@@ -1,0 +1,29 @@
+@import url('https://fonts.googleapis.com/css2?family=Poppins:wght@300;400;500;600;700;800;900&family=JetBrains+Mono:wght@400;500;700&display=swap');
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Poppins", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "JetBrains Mono", ui-monospace, SFMono-Regular, monospace;
+
+  /* Azul Austral: color base de marca. */
+  --color-primary-base: #2563EB;
+  --color-primary-dark: #1B3F9E;
+  --color-primary-light: rgba(37, 99, 235, 0.08);
+
+  /* Rojo reservado para errores. red-100 y red-700 estaban declarados dos
+     veces; se conserva el valor que ya ganaba (el ultimo) para no alterar
+     lo que se ve hoy. */
+  --color-red-50: #fef2f2;
+  --color-red-100: #fecaca;
+  --color-red-200: #fca5a5;
+  --color-red-600: #DC2626;
+  --color-red-700: #991b1b;
+  --color-slate-300: #cbd5e1;
+  --color-slate-400: #94a3b8;
+}
+
+body {
+  font-family: var(--font-sans);
+  background-color: #f1f5f9;
+  color: #0f172a;
+}

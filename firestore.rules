@@ -1,0 +1,185 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    
+    // 1. Global Catch-all Safety Net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- Helper Primitives & Security Validators ---
+
+    function isValidId(id) { 
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$'); 
+    }
+
+    function isSignedIn() { 
+      return request.auth != null; 
+    }
+
+    function isAdmin() {
+      return isSignedIn() && (
+        exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
+        ((request.auth.token.email == 'cam01back@gmail.com' || request.auth.token.email == 'juanpcolinagonzalez@gmail.com' || request.auth.token.email == 'kiosco.origenes@gmail.com') && request.auth.token.email_verified == true)
+      );
+    }
+
+    function isSuperAdmin() {
+      return isSignedIn() && (
+        (exists(/databases/$(database)/documents/admins/$(request.auth.uid)) && 
+         get(/databases/$(database)/documents/admins/$(request.auth.uid)).data.role == 'super') ||
+        ((request.auth.token.email == 'cam01back@gmail.com' || request.auth.token.email == 'juanpcolinagonzalez@gmail.com' || request.auth.token.email == 'kiosco.origenes@gmail.com') && request.auth.token.email_verified == true)
+      );
+    }
+
+    function isValidAdmin(adm) {
+      return adm.role is string && (adm.role == 'super' || adm.role == 'admin') &&
+             adm.email is string && adm.email.size() > 0 && adm.email.size() <= 200 &&
+             (adm.addedBy == null || (adm.addedBy is string && adm.addedBy.size() <= 128)) &&
+             (adm.addedAt == null || (adm.addedAt is string && adm.addedAt.size() <= 100));
+    }
+    // Schema and Type Verification for Products
+    function isValidProduct(p) {
+      return p.id is number &&
+             p.name is string && p.name.size() > 0 && p.name.size() <= 200 &&
+             p.name_lower is string && p.name_lower.size() > 0 && p.name_lower.size() <= 200 &&
+             p.brand is string && p.brand.size() <= 100 &&
+             p.price is number && p.price >= 0 &&
+             (p.orig == null || p.orig is number) &&
+             p.cat is string && p.cat.size() <= 50 &&
+             p.desc is string && p.desc.size() <= 2000 &&
+             p.inStock is bool &&
+             (p.featured == null || p.featured is bool) &&
+             (p.neww == null || p.neww is bool) &&
+             (p.image == null || p.image is string);
+    }
+
+     // Whitelist of the only fields an order document may ever contain.
+     // Blocks field injection (e.g. bypassedAdmin, isHotPromo) on create and update.
+     function hasOnlyOrderFields(o) {
+       return o.keys().hasOnly([
+         'id', 'timestamp', 'items', 'subtotal', 'delivery', 'shipping', 'total',
+         'status', 'customerName', 'customerPhone', 'customerLocation',
+         'paymentMethod', 'paymentStatus', 'deliveryDay', 'scheduledDate',
+         'qrDiscountAmount', 'couponCode', 'couponPercent', 'couponDiscountAmount'
+       ]);
+     }
+
+     // A customer may only open an order in a non-privileged initial state.
+     // 'confirmado' / 'listo' / 'entregado' / 'cancelado' are admin-only transitions.
+     function hasForcedInitialStatus(o) {
+       return o.status == 'pendiente' || o.status == 'pending_confirmation';
+     }
+
+     // Schema and Type Verification for Orders
+     function isValidOrder(o) {
+       return o.id is number &&
+              o.timestamp is string &&
+              o.items is list && o.items.size() > 0 && o.items.size() <= 100 &&
+              o.subtotal is number && o.subtotal >= 0 &&
+              o.delivery is string && (o.delivery == 'envio' || o.delivery == 'retiro') &&
+              o.shipping is number && o.shipping >= 0 &&
+              o.total is number && o.total >= 0 &&
+              o.status is string && (o.status == 'pendiente' || o.status == 'confirmado' || o.status == 'listo' || o.status == 'entregado' || o.status == 'cancelado' || o.status == 'pending_confirmation') &&
+              o.customerName is string && o.customerName.size() > 0 && o.customerName.size() <= 200 &&
+              o.customerPhone is string && o.customerPhone.size() > 0 && o.customerPhone.size() <= 30 &&
+              (o.customerLocation == null || (o.customerLocation is string && o.customerLocation.size() <= 500)) &&
+              (o.paymentMethod == null || (o.paymentMethod is string && o.paymentMethod.size() <= 100)) &&
+              (o.paymentStatus == null || (o.paymentStatus is string && o.paymentStatus.size() <= 100)) &&
+              (o.deliveryDay == null || o.deliveryDay is string) &&
+              (o.scheduledDate == null || o.scheduledDate is string) &&
+              // Desglose del cobro: montos no negativos, porcentaje 0-100.
+              (o.qrDiscountAmount == null || (o.qrDiscountAmount is number && o.qrDiscountAmount >= 0)) &&
+              (o.couponCode == null || (o.couponCode is string && o.couponCode.size() <= 50)) &&
+              (o.couponPercent == null || (o.couponPercent is number && o.couponPercent >= 0 && o.couponPercent <= 100)) &&
+              (o.couponDiscountAmount == null || (o.couponDiscountAmount is number && o.couponDiscountAmount >= 0));
+     }
+
+    // --- Declarative Rules per Collection path ---
+
+    match /products/{productId} {
+      allow read: if true;
+      allow create: if isAdmin() && isValidProduct(request.resource.data);
+      allow update: if isAdmin() && isValidProduct(request.resource.data);
+      allow delete: if isAdmin();
+    }
+
+    match /orders/{orderId} {
+      // Orders carry customer name, phone and address: never public.
+      // Only an administrator may read or list them.
+      allow read: if isAdmin();
+      // Any customer can create an order, but only with whitelisted fields
+      // and a forced non-privileged initial status.
+      allow create: if isValidOrder(request.resource.data) &&
+                    hasOnlyOrderFields(request.resource.data) &&
+                    hasForcedInitialStatus(request.resource.data);
+      // Only administrators can edit order statuses (and cannot delete orders)
+      allow update: if isAdmin() &&
+                    isValidOrder(request.resource.data) &&
+                    hasOnlyOrderFields(request.resource.data);
+      allow delete: if false;
+    }
+
+    match /banners/{bannerId} {
+      allow read: if true;
+      allow write: if isAdmin();
+    }
+
+    // Schema and Type Verification for DeliveryZones
+    function isValidDeliveryZone(z) {
+      return z.id is string && z.id.size() <= 128 &&
+             z.name is string && z.name.size() > 0 && z.name.size() <= 200 &&
+             z.km is number && z.km >= 0 &&
+             z.price is number && z.price >= 0;
+    }
+
+    match /delivery_zones/{zoneId} {
+      allow read: if true;
+      allow create, update: if isAdmin() && isValidDeliveryZone(request.resource.data);
+      allow delete: if isAdmin();
+    }
+
+    // Sensitive integration settings hold external credentials (StarPOS secret,
+    // billing API key): restricted to super-admins. Everything else stays admin.
+    // Written as a single match because Firestore ORs together every matching
+    // rule: a separate wildcard match would re-grant admins access to these.
+    //
+    // settings/delivery is the exception on read: it only holds
+    // deliveryCutoffHour, which the storefront needs to show the real cut-off
+    // time to customers. Writing it still requires an admin.
+    match /settings/{settingId} {
+      allow read: if settingId == 'delivery'
+                     ? true
+                     : ((settingId == 'starpos' || settingId == 'billing') ? isSuperAdmin() : isAdmin());
+      allow write: if (settingId == 'starpos' || settingId == 'billing')
+                      ? isSuperAdmin()
+                      : isAdmin();
+    }
+
+    match /admins/{adminId} {
+      allow read: if isAdmin();
+      allow create: if (isSuperAdmin() && isValidAdmin(request.resource.data)) ||
+                     (isSignedIn() && request.auth.uid == adminId && 
+                      request.auth.token.email != null && 
+                      exists(/databases/$(database)/documents/admin_invites/$(request.auth.token.email.lower())) && 
+                      isValidAdmin(request.resource.data) &&
+                      request.resource.data.role == get(/databases/$(database)/documents/admin_invites/$(request.auth.token.email.lower())).data.role &&
+                      request.resource.data.role != 'super');
+      allow update: if isSuperAdmin() && isValidAdmin(request.resource.data);
+      allow delete: if isSuperAdmin();
+    }
+
+    match /admin_invites/{email} {
+      allow read: if isSuperAdmin() || 
+                    (isSignedIn() && request.auth.token.email != null && request.auth.token.email.lower() == email);
+      allow create, update: if isSuperAdmin();
+      allow delete: if isSuperAdmin() || 
+                    (isSignedIn() && request.auth.token.email != null && request.auth.token.email.lower() == email);
+    }
+
+    match /starpos_imported_sales/{saleId} {
+      allow read, write: if isAdmin();
+    }
+
+  }
+}

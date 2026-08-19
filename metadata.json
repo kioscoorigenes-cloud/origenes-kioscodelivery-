@@ -1,0 +1,6 @@
+{
+  "name": "Orígenes Kiosco y Delivery",
+  "description": "Aplicación de compras y envíos a domicilio para Orígenes Kiosco con panel de administración.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

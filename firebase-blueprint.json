@@ -1,0 +1,239 @@
+{
+  "entities": {
+    "product": {
+      "title": "Product",
+      "description": "Un producto o combo del kiosco Orígenes.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "number",
+          "description": "ID numérico único del producto."
+        },
+        "name": {
+          "type": "string",
+          "description": "Nombre del producto."
+        },
+        "name_lower": {
+          "type": "string",
+          "description": "Nombre del producto en minúsculas y sin espacios al inicio/fin para búsquedas por prefijo."
+        },
+        "brand": {
+          "type": "string",
+          "description": "Marca del producto."
+        },
+        "price": {
+          "type": "number",
+          "description": "Precio de venta actual."
+        },
+        "orig": {
+          "type": "number",
+          "description": "Precio original/anterior sin oferta opcional."
+        },
+        "cat": {
+          "type": "string",
+          "description": "Categoría o rubro (ej: bebidas, golosinas, snacks, combos, promociones, etc)."
+        },
+        "desc": {
+          "type": "string",
+          "description": "Descripción de detalles o tamaño."
+        },
+        "inStock": {
+          "type": "boolean",
+          "description": "Indicador de stock activo para la venta."
+        },
+        "featured": {
+          "type": "boolean",
+          "description": "Destacado en el carrusel de inicio."
+        },
+        "neww": {
+          "type": "boolean",
+          "description": "Indicador de producto nuevo."
+        },
+        "image": {
+          "type": "string",
+          "description": "Enlace URL a la imagen o foto descriptiva."
+        }
+      },
+      "required": ["id", "name", "price", "cat", "inStock"]
+    },
+    "order": {
+      "title": "Order",
+      "description": "Un pedido realizado por un cliente.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "number",
+          "description": "ID numérico único interno del pedido."
+        },
+        "timestamp": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Marca temporal en formato ISO de la creación."
+        },
+        "items": {
+          "type": "array",
+          "description": "Listado de elementos que componen el pedido."
+        },
+        "subtotal": {
+          "type": "number",
+          "description": "Costo de los productos cargados."
+        },
+        "delivery": {
+          "type": "string",
+          "enum": ["envio", "retiro"],
+          "description": "Modalidad de entrega."
+        },
+        "shipping": {
+          "type": "number",
+          "description": "Costo de envío."
+        },
+        "total": {
+          "type": "number",
+          "description": "Total facturado acumulado."
+        },
+        "status": {
+          "type": "string",
+          "enum": ["pendiente", "confirmado", "entregado", "cancelado"],
+          "description": "Estado de la orden de compra."
+        },
+        "customerName": {
+          "type": "string",
+          "description": "Nombre completo del cliente."
+        },
+        "customerPhone": {
+          "type": "string",
+          "description": "Celular de contacto del cliente."
+        },
+        "customerLocation": {
+          "type": "string",
+          "description": "Dirección de despacho exacta cuando aplica envío."
+        },
+        "paymentMethod": {
+          "type": "string",
+          "description": "Forma de pago elegida."
+        },
+        "paymentStatus": {
+          "type": "string",
+          "description": "Estado transaccional del pago."
+        }
+      },
+      "required": ["id", "timestamp", "items", "subtotal", "delivery", "total", "status", "customerName", "customerPhone"]
+    },
+    "delivery_zone": {
+      "title": "DeliveryZone",
+      "description": "Una zona de envío con precio fijo y km aproximado.",
+      "type": "object",
+      "properties": {
+        "id": {
+          "type": "string",
+          "description": "ID/Código de la zona."
+        },
+        "name": {
+          "type": "string",
+          "description": "Nombre de la zona o barrio."
+        },
+        "km": {
+          "type": "number",
+          "description": "Kilómetros aproximados de distancia."
+        },
+        "price": {
+          "type": "number",
+          "description": "Precio fijo de entrega (4000 de base + 1000 por km)."
+        }
+      },
+      "required": ["id", "name", "km", "price"]
+    },
+    "billing_config": {
+      "title": "BillingConfig",
+      "description": "Configuración del facturador del sistema.",
+      "type": "object",
+      "properties": {
+        "apiUrl": {
+          "type": "string",
+          "description": "URL de la API del facturador."
+        },
+        "apiKey": {
+          "type": "string",
+          "description": "API Key de acceso."
+        }
+      },
+      "required": ["apiUrl", "apiKey"]
+    },
+    "admin": {
+      "title": "Admin",
+      "description": "Un rol de administrador o superadministrador en el sistema.",
+      "type": "object",
+      "properties": {
+        "role": {
+          "type": "string",
+          "enum": ["super", "admin"],
+          "description": "Nivel de rol en la aplicación."
+        },
+        "email": {
+          "type": "string",
+          "description": "Dirección de correo electrónico asociada al administrador."
+        },
+        "addedBy": {
+          "type": "string",
+          "description": "UID de quien lo agregó."
+        },
+        "addedAt": {
+          "type": "string",
+          "description": "Fecha en que fue agregado."
+        }
+      },
+      "required": ["role", "email"]
+    },
+    "admin_invite": {
+      "title": "AdminInvite",
+      "description": "Una invitación de administrador pendiente por correo electrónico.",
+      "type": "object",
+      "properties": {
+        "email": {
+          "type": "string",
+          "description": "Dirección de correo electrónico asociada al invitado."
+        },
+        "role": {
+          "type": "string",
+          "enum": ["super", "admin"],
+          "description": "Rol sugerido al aceptar la invitación."
+        },
+        "addedBy": {
+          "type": "string",
+          "description": "Nombre o correo de quien realizó la invitación."
+        },
+        "addedAt": {
+          "type": "string",
+          "description": "Fecha en que fue extendida la invitación."
+        }
+      },
+      "required": ["email", "role"]
+    }
+  },
+  "firestore": {
+    "products": {
+      "schema": "product",
+      "description": "Colección global de productos del kiosco Orígenes."
+    },
+    "orders": {
+      "schema": "order",
+      "description": "Pedidos realizados por clientes en tiempo real."
+    },
+    "delivery_zones": {
+      "schema": "delivery_zone",
+      "description": "Zonas de envío con tarifas dinámicas."
+    },
+    "settings": {
+      "schema": "billing_config",
+      "description": "Configuración de integraciones de la tienda (ej: facturador)."
+    },
+    "admins": {
+      "schema": "admin",
+      "description": "Listado de administradores con permisos de acceso y gestión."
+    },
+    "admin_invites": {
+      "schema": "admin_invite",
+      "description": "Invitaciones de administrador pendientes por ser reclamadas."
+    }
+  }
+}
