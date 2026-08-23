@@ -68,6 +68,7 @@ export interface Combo {
   price: number;
   orig: number;
   saving: number;
+  image?: string;
   /** Si es false, el combo no se muestra en la tienda. */
   active?: boolean;
 }

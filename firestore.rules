@@ -141,6 +141,7 @@ service cloud.firestore {
              c.price is number && c.price > 0 &&
              c.orig is number && c.orig > 0 &&
              c.saving is number && c.saving >= 0 &&
+             (c.image == null || c.image is string) &&
              (c.active == null || c.active is bool);
     }
 

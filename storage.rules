@@ -1,6 +1,6 @@
 rules_version = '2';
 
-// Reglas de Firebase Storage — fotos de productos de Orígenes Kiosco.
+// Reglas de Firebase Storage — fotos de productos y combos de Orígenes Kiosco.
 // Lectura: pública (los clientes ven las fotos del catálogo).
 // Escritura: SOLO los administradores del kiosco (mails verificados),
 //            solo imágenes y con un máximo de 5MB por archivo.
@@ -14,7 +14,22 @@ service firebase.storage {
         && request.auth.token.email in [
           'cam01back@gmail.com',
           'juanpcolinagonzalez@gmail.com',
-          'kiosco.origenes@gmail.com'
+          'kiosco.origenes@gmail.com',
+          'olimpopiquet2019@gmail.com'
+        ]
+        && request.resource.size < 5 * 1024 * 1024
+        && request.resource.contentType.matches('image/.*');
+    }
+
+    match /combos/{fileName} {
+      allow read: if true;
+      allow write: if request.auth != null
+        && request.auth.token.email_verified == true
+        && request.auth.token.email in [
+          'cam01back@gmail.com',
+          'juanpcolinagonzalez@gmail.com',
+          'kiosco.origenes@gmail.com',
+          'olimpopiquet2019@gmail.com'
         ]
         && request.resource.size < 5 * 1024 * 1024
         && request.resource.contentType.matches('image/.*');

@@ -2403,10 +2403,14 @@ const compressImage = (dataUrl: string, maxDim: number = 1024, quality: number =
                   key={c.id}
                   className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm flex gap-3 relative hover:border-slate-300 transition-all"
                 >
-                  <div className="w-16 h-16 bg-blue-50 text-blue-600 rounded-xl flex flex-col items-center justify-center shrink-0">
-                    <span className="text-xs font-black tracking-widest">{c.label}</span>
-                    <span className="text-[7.5px] font-black uppercase tracking-widest mt-0.5 text-blue-400">Combo</span>
-                  </div>
+                  {c.image ? (
+                    <img src={c.image} className="w-16 h-16 rounded-xl object-cover shrink-0 border border-slate-200" alt={c.name} referrerPolicy="no-referrer" />
+                  ) : (
+                    <div className="w-16 h-16 bg-blue-50 text-blue-600 rounded-xl flex flex-col items-center justify-center shrink-0">
+                      <span className="text-xs font-black tracking-widest">{c.label}</span>
+                      <span className="text-[7.5px] font-black uppercase tracking-widest mt-0.5 text-blue-400">Combo</span>
+                    </div>
+                  )}
                   
                   <div className="flex-1 min-w-0">
                     <h4 className="text-[13.5px] font-bold text-slate-800 leading-tight">{c.name}</h4>

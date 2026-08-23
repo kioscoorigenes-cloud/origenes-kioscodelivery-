@@ -737,6 +737,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [comboPriceInput, setComboPriceInput] = useState<string>('');
   const [comboOrigInput, setComboOrigInput] = useState<string>('');
   const [savingCombo, setSavingCombo] = useState<boolean>(false);
+  const [comboImageInput, setComboImageInput] = useState<string>('');
+  const [isUploadingComboPhoto, setIsUploadingComboPhoto] = useState<boolean>(false);
 
   const resetComboForm = () => {
     setEditingCombo(null);
@@ -745,6 +747,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     setComboItemsInput('');
     setComboPriceInput('');
     setComboOrigInput('');
+    setComboImageInput('');
   };
 
   const handleSaveCombo = async (e: React.FormEvent) => {
@@ -779,6 +782,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         orig,
         saving: orig - price,
         active: editingCombo ? (editingCombo.active !== false) : true,
+        ...(comboImageInput ? { image: comboImageInput } : {}),
       };
       await setDoc(doc(db, 'combos', comboId), comboDoc);
       showToast(editingCombo ? '\ud83c\udf81 \u00a1Combo actualizado!' : '\ud83c\udf81 \u00a1Combo creado! Ya se ve en la tienda.');
@@ -788,6 +792,54 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       showToast('Error al guardar el combo \u274C');
     } finally {
       setSavingCombo(false);
+    }
+  };
+
+  // Misma logica que la foto de producto, pero contra la carpeta combos/.
+  const handleComboPhotoSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      showToast('El archivo tiene que ser una imagen \u274C');
+      return;
+    }
+    setIsUploadingComboPhoto(true);
+    try {
+      let blob: Blob;
+      try {
+        blob = await compressImageForUpload(file);
+      } catch (compressErr) {
+        console.error('No se pudo comprimir, uso el archivo original:', compressErr);
+        blob = file;
+      }
+      try {
+        const path = `combos/${Date.now()}_${Math.random().toString(36).slice(2, 8)}.jpg`;
+        const fileRef = storageFileRef(storage, path);
+        await uploadBytes(fileRef, blob, {
+          contentType: blob.type || 'image/jpeg',
+          cacheControl: 'public, max-age=31536000',
+        });
+        const url = await getDownloadURL(fileRef);
+        setComboImageInput(url);
+        showToast('\ud83d\udcf7 \u00a1Foto subida con exito!');
+      } catch (uploadErr) {
+        console.error('Storage no disponible, uso fallback local:', uploadErr);
+        if (blob.size > 700 * 1024) {
+          showToast('La foto es muy pesada y Storage no esta disponible \u274C');
+          return;
+        }
+        const dataUrl: string = await new Promise((res, rej) => {
+          const fr = new FileReader();
+          fr.onerror = () => rej(new Error('No se pudo leer la foto'));
+          fr.onloadend = () => res(String(fr.result));
+          fr.readAsDataURL(blob);
+        });
+        setComboImageInput(dataUrl);
+        showToast('\ud83d\udcf7 Foto cargada (guardada dentro del combo)');
+      }
+    } finally {
+      setIsUploadingComboPhoto(false);
     }
   };
 
@@ -808,6 +860,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     setComboItemsInput(combo.items);
     setComboPriceInput(combo.price.toString());
     setComboOrigInput(combo.orig.toString());
+    setComboImageInput(combo.image || '');
   };
 
   const handleDeleteCombo = (combo: Combo) => {
@@ -3311,6 +3364,12 @@ className="bg-slate-800 hover:bg-slate-700 text-sky-400 border border-slate-700/
                     return null;
                   })()}
 
+                  <div className="p-3 bg-slate-50 border border-dashed border-slate-200 rounded-xl flex flex-col gap-2">
+                    <label className="block text-[9.5px] font-black text-slate-500 uppercase tracking-wider leading-none">📷 Foto del combo (opcional)</label>
+                    <input type="file" accept="image/*" disabled={isUploadingComboPhoto} onChange={handleComboPhotoSelected} className="text-[10.5px] text-slate-500 file:mr-2 file:py-1 file:px-2 file:rounded-md file:border-0 file:text-[10px] file:font-semibold file:bg-slate-200 file:text-slate-800 hover:file:bg-slate-300 cursor-pointer disabled:opacity-50 disabled:cursor-wait" />
+                    {isUploadingComboPhoto && (<div className="flex items-center gap-2 text-[10.5px] text-blue-600 font-extrabold animate-pulse"><span className="w-3 h-3 border-2 border-blue-300 border-t-blue-600 rounded-full animate-spin inline-block"></span>Subiendo la foto...</div>)}
+                    {comboImageInput && (<div className="mt-1 flex items-center gap-2.5 p-1 bg-emerald-50 border border-emerald-100 rounded-lg"><img src={comboImageInput} className="w-9 h-9 object-cover rounded shadow border shrink-0" alt="Foto del combo" referrerPolicy="no-referrer" /><span className="text-[10px] text-emerald-700 font-extrabold font-sans">✓ Foto cargada</span><button type="button" onClick={() => setComboImageInput('')} className="ml-auto text-[10px] text-red-500 font-bold hover:underline cursor-pointer">Quitar</button></div>)}
+                  </div>
                   <div className="grid grid-cols-2 gap-2 mt-1">
                     {editingCombo && (
                       <button
