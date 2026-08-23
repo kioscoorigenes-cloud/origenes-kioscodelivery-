@@ -127,7 +127,8 @@ export interface StarPOSTicketLine {
   id: string;
   product_id: string;
   product_name: string;
-  qty: number;
+  // La API de StarPOS envía la cantidad vendida en el campo "units" (no "qty").
+  units: number;
   price: number;
   subtotal: number;
 }
@@ -225,7 +226,11 @@ export async function authenticateStarPOS(forceRefresh = false): Promise<string>
   }
 
   const authUrl = `${config.serviceUrl.replace(/\/$/, '')}/v1/Authenticate`;
-  
+
+  // Timeout: si StarPOS (local/túnel) queda a medias en el handshake, no se
+  // cuelga la sincronización indefinidamente.
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 10000);
   try {
     const response = await fetch(authUrl, {
       method: 'POST',
@@ -234,8 +239,10 @@ export async function authenticateStarPOS(forceRefresh = false): Promise<string>
         user_id: config.userId,
         secret: config.secret,
         service: "https://starpos.com/api"
-      })
+      }),
+      signal: controller.signal
     });
+    clearTimeout(timeoutId);
 
     if (!response.ok) {
       throw new Error(`Authentication failed with status ${response.status}`);
@@ -248,11 +255,13 @@ export async function authenticateStarPOS(forceRefresh = false): Promise<string>
       tokenExpiry = Date.now() + 3600 * 1000;
       return cachedToken;
     } else {
-      throw new Error("Invalid Auth response: missing 'TEST_MARKER_V2_Invalid Auth response structure' in payload.");
+      throw new Error("Respuesta de autenticación inválida de StarPOS: falta 'payload.access_token'.");
     }
   } catch (error: any) {
-    console.error(`StarPOS Auth Error at ${authUrl}:`, error.message);
-    throw new Error(`Error de autenticación StarPOS: ${error.message}`);
+    clearTimeout(timeoutId);
+    const msg = error.name === 'AbortError' ? 'timeout (StarPOS no respondió en 10s)' : error.message;
+    console.error(`StarPOS Auth Error at ${authUrl}:`, msg);
+    throw new Error(`Error de autenticación StarPOS: ${msg}`);
   }
 }
 
@@ -260,20 +269,33 @@ export async function authenticateStarPOS(forceRefresh = false): Promise<string>
  * Safe fetch helper using cached token
  */
 async function authenticatedFetch(endpoint: string, options: RequestInit = {}): Promise<Response> {
-  const token = await authenticateStarPOS();
   const config = await getStarPOSConfig();
   const url = `${config.serviceUrl.replace(/\/$/, '')}${endpoint}`;
-  
-  const headers = {
-    'Content-Type': 'application/json',
-    'Authorization': `Bearer ${token}`,
-    ...(options.headers || {})
+
+  const doFetch = async (token: string): Promise<Response> => {
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), 10000);
+    try {
+      return await fetch(url, {
+        ...options,
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${token}`,
+          ...(options.headers || {})
+        },
+        signal: controller.signal
+      });
+    } finally {
+      clearTimeout(timeoutId);
+    }
   };
 
-  return fetch(url, {
-    ...options,
-    headers
-  });
+  let res = await doFetch(await authenticateStarPOS());
+  // Si el token venció o es inválido, se refresca UNA vez y se reintenta.
+  if (res.status === 401 || res.status === 403) {
+    res = await doFetch(await authenticateStarPOS(true));
+  }
+  return res;
 }
 
 /**
@@ -429,11 +451,14 @@ export async function syncCatalogToStarPOS(products: Product[]): Promise<SyncRep
         products_branches: [
           'branch_principal'
         ],
+        // Precio base = lista. Si hay descuento real (orig > price), el base es
+        // orig y la OFERTA activa es el precio promocional (más bajo). Antes la
+        // oferta usaba orig (el más alto) y podía anular la promo en el POS.
         products_prices: [
-          { price_list_id: 'price_list_general', price_sell: p.price, last_modification: new Date().toISOString().slice(0,10) }
+          { price_list_id: 'price_list_general', price_sell: (p.orig && p.orig > p.price) ? p.orig : p.price, last_modification: new Date().toISOString().slice(0,10) }
         ],
-        products_price_offers: p.orig ? [
-          { id: `offer_${pId}`, price_list_id: 'price_list_general', price_sell: p.orig, price_buy: p.orig, active: true, date_begin: new Date().toISOString().slice(0,10), last_modification: new Date().toISOString().slice(0,10) }
+        products_price_offers: (p.orig && p.orig > p.price) ? [
+          { id: `offer_${pId}`, price_list_id: 'price_list_general', price_sell: p.price, active: true, date_begin: new Date().toISOString().slice(0,10), last_modification: new Date().toISOString().slice(0,10) }
         ] : [],
         products_sales_by_qty: []
       };
@@ -571,6 +596,12 @@ export async function syncSalesAndDiscountStock(firestoreProducts: Product[]): P
     let stockUpdatedCount = 0;
 
     for (const ticket of tickets) {
+      // Validación defensiva: si el ticket no tiene la forma esperada, se saltea
+      // y se loguea, en vez de romper todo el loop (que dispararía el reproceso).
+      if (!ticket || typeof ticket.id === 'undefined' || !Array.isArray(ticket.ticket_lines)) {
+        result.logs.push(`   ⚠️ Ticket con forma inválida, se omite.`);
+        continue;
+      }
       if (processedTicketIds.has(ticket.id)) {
         continue;
       }
@@ -580,20 +611,24 @@ export async function syncSalesAndDiscountStock(firestoreProducts: Product[]): P
 
       // Loop over ticket lines
       for (const line of ticket.ticket_lines) {
+        if (!line || typeof line.units !== 'number') { continue; }
         // Find product with matching code or ID
-        const matchedProduct = currentProducts.find(p => 
-          p.id.toString() === line.product_id || 
+        const matchedProduct = currentProducts.find(p =>
+          p.id.toString() === line.product_id ||
           p.codigoFacturador === line.product_id ||
-          p.name.toLowerCase() === line.product_name.toLowerCase()
+          (!!line.product_name && p.name.toLowerCase() === String(line.product_name).toLowerCase())
         );
 
         if (matchedProduct) {
-          // If product has a stockQty, decrement it. Else, we can set stockQty to a default or just set to out of stock
-          const currentStock = (matchedProduct as any).stockQty !== undefined 
-            ? (matchedProduct as any).stockQty 
-            : (matchedProduct.inStock ? 15 : 0); // fallback default starting stock
+          // Solo se descuenta si conocemos el stock REAL del producto. Antes se
+          // inventaba una base de 15 unidades, escribiendo inventario ficticio.
+          const knownStock = (matchedProduct as any).stockQty;
+          if (typeof knownStock !== 'number') {
+            result.logs.push(`   ⚠️ "${matchedProduct.name}": stock desconocido, no se descuenta (cargá el stock real primero).`);
+            continue;
+          }
 
-          const nextStock = Math.max(0, currentStock - line.qty);
+          const nextStock = Math.max(0, knownStock - line.units);
           const nextInStock = nextStock > 0;
 
           // Update Firestore
@@ -613,11 +648,11 @@ export async function syncSalesAndDiscountStock(firestoreProducts: Product[]): P
           result.stockReductions.push({
             productName: matchedProduct.name,
             sku: matchedProduct.codigoFacturador || matchedProduct.id.toString(),
-            qty: line.qty
+            qty: line.units
           });
           
           stockUpdatedCount++;
-          result.logs.push(`   -> Descontado "${matchedProduct.name}" x${line.qty}. Nuevo stock: ${nextStock}`);
+          result.logs.push(`   -> Descontado "${matchedProduct.name}" x${line.units}. Nuevo stock: ${nextStock}`);
         } else {
           result.logs.push(`   ⚠️ No se encontró producto en tienda para ID/Nombre: "${line.product_name}" (Línea omitida).`);
         }
@@ -633,6 +668,17 @@ export async function syncSalesAndDiscountStock(firestoreProducts: Product[]): P
                         await setDoc(doc(db, 'starpos_imported_sales', ticket.id), { ...ticket, importedAt: new Date().toISOString() });
                             }
       
+      // Persistir el estado tras CADA ticket procesado: si un ticket posterior
+      // falla, los ya descontados quedan registrados y no se reprocesan (esto es
+      // lo que evita el doble descuento de stock).
+      try {
+        if (adminDb) {
+          await adminDb.collection('settings').doc('starpos_sync_state').set({ processedTicketIds: newProcessedTicketIds, lastSyncTime: new Date().toISOString() });
+        } else {
+          await setDoc(stateRef, { processedTicketIds: newProcessedTicketIds, lastSyncTime: new Date().toISOString() });
+        }
+      } catch (e) { /* se reintenta en la próxima corrida */ }
+
       // Mark as transmitted in StarPOS API
       try {
         await authenticatedFetch('/v1/SetTransmitted', {
@@ -748,34 +794,11 @@ const qty = typeof stockItem.units !== 'undefined'
         updatedCount++;
         result.logs.push(`   -> "${matchedProduct.name}" stock actualizado de forma directa a: ${nextStock}`);
       } else {
-        // Product doesn't exist yet in our catalog: create it using StarPOS product master data
-        const starposProduct = stockItem.product || {};
-        const rawId = starposProduct.id || starposProduct.code || itemId;
-        const numericId = Number(rawId);
-        const newId = Number.isFinite(numericId) ? numericId : Date.now() + updatedCount;
-        const nextStock = Math.max(0, Number(qty));
-        const nextInStock = nextStock > 0;
-        const newProduct: Product = {
-        id: newId,
-        cat: toSlug((starposProduct.category && starposProduct.category.name) || 'sin-categoria'),
-        name: starposProduct.name || `Producto ${itemId}`,
-        name_lower: (starposProduct.name || `Producto ${itemId}`).trim().toLowerCase(),
-        brand: (starposProduct.brand && starposProduct.brand.name) || 'Genérico',
-        price: (() => { const pp = Array.isArray(starposProduct.products_prices) ? starposProduct.products_prices : []; const sell = pp.length > 0 ? Number(pp[0].price_sell) : NaN; return Number.isFinite(sell) && sell > 0 ? sell : (Number(starposProduct.price_buy) || 0); })(),
-        orig: null,
-        desc: `Importado automáticamente desde StarPOS (código ${itemId}).`,
-        inStock: nextInStock,
-        codigoFacturador: itemId.toString(),
-        };
-            const newProductRef = doc(db, 'products', newId.toString());
-                if (adminDb) {
-                      await adminDb.collection('products').doc(newId.toString()).set({ ...newProduct, stockQty: nextStock });
-                          } else {
-                                await setDoc(newProductRef, { ...newProduct, stockQty: nextStock });
-                                    }
-                                    currentProducts.push(newProduct);
-        updatedCount++;
-        result.logs.push(`  ➕ "${newProduct.name}" creado como producto nuevo con stock: ${nextStock}`);
+        // Seguridad: NO se auto-crea el producto. Antes se creaba con precio
+        // posible $0 y categoría 'sin-categoria', lo que con un mapeo de IDs
+        // incorrecto podía llenar el catálogo de basura vendible. El operador
+        // decide qué productos existen; acá solo se avisa.
+        result.logs.push(`   ⚠️ Ítem de stock sin producto en la tienda (código ${itemId}): se omite, no se crea automáticamente.`);
       }
     }
 

@@ -8,6 +8,8 @@ import {
 import { collection, query, where, orderBy, limit, getDocs } from 'firebase/firestore';
 import { db } from '../firebase';
 import { Product, Order, Combo, Promo, PromoBanner, DeliveryZone } from '../types';
+import { orderStatusStep, orderStatusLabel } from '../utils/orderStatus';
+import { playChime } from '../utils/audio';
 import { CATS, CAT_ABBR, CAT_BG, COMBOS, PROMOS_LIST, getFallbackStoreImage, isDeliveryAvailableNow, inferCategory } from '../data';
 import { DeliveryMapTracker } from './DeliveryMapTracker';
 import { Modal } from './Modal';
@@ -39,6 +41,7 @@ interface StorefrontProps {
   signInError?: string | null;
   onSignOut?: () => void;
   deliveryZones?: DeliveryZone[];
+  combos?: Combo[];
   isAdmin?: boolean;
   onDbCategoryChange?: (category: string) => void;
   hasMoreProducts?: boolean;
@@ -144,6 +147,7 @@ export const Storefront: React.FC<StorefrontProps> = ({
   signInError,
   onSignOut,
   deliveryZones = [],
+  combos = [],
   isAdmin,
   onDbCategoryChange,
   hasMoreProducts,
@@ -151,6 +155,12 @@ export const Storefront: React.FC<StorefrontProps> = ({
   productsStatus,
   deliveryCutoffHour
 }) => {
+  // Combos que se muestran: los cargados desde el panel (Firestore) tienen
+  // prioridad; si no hay ninguno, se usa la lista fija del codigo (COMBOS).
+  const combosList = (combos && combos.length > 0)
+    ? combos.filter(c => c.active !== false)
+    : COMBOS;
+
   const [currentTab, _setCurrentTab] = useState<'home' | 'catalog' | 'promos' | 'combos' | 'cart'>('home');
   const [tabHistory, setTabHistory] = useState<('home' | 'catalog' | 'promos' | 'combos' | 'cart')[]>(['home']);
 
@@ -372,10 +382,71 @@ export const Storefront: React.FC<StorefrontProps> = ({
     showToast("🛒 ¡Pedido cargado al carrito! 🔄");
   };
 
+  // Si el cliente cerró el seguimiento, se oculta hasta que lo reabra (o haga otro pedido).
+  const [trackerDismissed, setTrackerDismissed] = useState<boolean>(false);
+
   const liveOrder = useMemo(() => {
-    if (!lastPlacedOrder) return null;
-    return orders.find(o => o.id === lastPlacedOrder.id) || lastPlacedOrder;
+    // Pedido recién confirmado en esta sesión (matchea por número local).
+    if (lastPlacedOrder) return orders.find(o => o.id === lastPlacedOrder.id) || lastPlacedOrder;
+    // Rehidratación: si quedó un pedido activo guardado, seguirlo desde `orders`
+    // (que ya recibe las actualizaciones en vivo por la suscripción de App). Así
+    // el seguimiento SOBREVIVE a recargar la página o volver al catálogo.
+    let activeId: string | null = null;
+    try { activeId = localStorage.getItem('origenes_active_order_id'); } catch (e) { /* sin storage */ }
+    if (activeId) {
+      const found = orders.find(o => o.docId === activeId);
+      if (found && found.status !== 'entregado' && found.status !== 'cancelado') return found;
+    }
+    return null;
   }, [orders, lastPlacedOrder]);
+
+  // ============ NOTIFICACION AL CLIENTE CUANDO SU PEDIDO AVANZA ============
+  // Cuando el local cambia el estado (confirmado, en preparacion, en camino,
+  // listo, entregado), el cliente recibe: sonido + aviso dentro de la app +
+  // notificacion del navegador (si dio permiso). El primer render no notifica.
+  const prevOrderStatusRef = useRef<string | null>(null);
+  useEffect(() => {
+    const status = liveOrder?.status ?? null;
+    const prev = prevOrderStatusRef.current;
+    prevOrderStatusRef.current = status;
+    if (!status || prev === null || prev === status) return;
+
+    const delivery = liveOrder?.delivery;
+    const NOTIFY_MSGS: Record<string, string> = {
+      confirmado: '\u2705 \u00a1Tu pedido fue CONFIRMADO por el kiosco!',
+      en_preparacion: '\ud83d\udc68\u200d\ud83c\udf73 \u00a1Tu pedido esta EN PREPARACION!',
+      en_camino: '\ud83d\udef5 \u00a1Tu pedido esta EN CAMINO a tu casa!',
+      listo: delivery === 'retiro'
+        ? '\ud83d\udecd\ufe0f \u00a1Tu pedido esta LISTO para retirar!'
+        : '\ud83d\udce6 \u00a1Tu pedido esta listo y sale enseguida!',
+      entregado: '\ud83c\udf89 \u00a1Pedido ENTREGADO! Gracias por tu compra.',
+      cancelado: '\u274c Tu pedido fue cancelado. Consultanos por WhatsApp si tenes dudas.',
+    };
+    const msg = NOTIFY_MSGS[status] || `Tu pedido cambio de estado: ${orderStatusLabel(status as any, delivery as any)}`;
+
+    showToast(msg);
+    try { playChime(); } catch (e) { /* sin audio */ }
+    try { if (navigator.vibrate) navigator.vibrate([180, 90, 180]); } catch (e) { /* sin vibrador */ }
+    try {
+      if ('Notification' in window && Notification.permission === 'granted') {
+        new Notification('Origenes Kiosco', { body: msg, icon: '/icon-192.png', tag: 'origenes-pedido' });
+      }
+    } catch (e) { /* Notification API no disponible */ }
+
+    // Reabrir el seguimiento para que vea el avance al instante.
+    setTrackerDismissed(false);
+  }, [liveOrder?.status]);
+
+  // Pedir permiso de notificaciones apenas se confirma un pedido, que es el
+  // momento en que al cliente MAS le sirve aceptarlas.
+  useEffect(() => {
+    if (!lastPlacedOrder) return;
+    try {
+      if ('Notification' in window && Notification.permission === 'default') {
+        Notification.requestPermission().catch(() => { /* rechazado */ });
+      }
+    } catch (e) { /* API no disponible */ }
+  }, [lastPlacedOrder]);
 
   const crossSellProducts = useMemo(() => {
     // Candidates are inStock and NOT currently in the shopping cart
@@ -865,25 +936,14 @@ const compressImage = (dataUrl: string, maxDim: number = 1024, quality: number =
   
   
 
-  // Elegir QR con un cupon de descuento puesto: manda el QR y se quita el cupon.
-  // Asi nunca queda el estado "QR + cupon" y el badge -10% siempre dice la verdad.
+  // El pago con QR ya no tiene descuento (decision del cliente):
+  // es un metodo de pago mas, sin promo asociada.
   const selectQRPayment = () => {
-    if (appliedCoupon && appliedCoupon.type === 'discount') {
-      setAppliedCoupon(null);
-      showToast('Quitamos el cupón de descuento: el pago con QR ya aplica 10% off (no se combinan).');
-    }
     setPaymentMethod('transferencia_qr');
   };
 
   const handleApplyCoupon = () => {
     const code = couponInput.trim().toUpperCase();
-
-    // Los descuentos no se acumulan y el QR tiene prioridad: se rechaza el cupon
-    // y se le dice al cliente como usarlo. ENVIO_GRATIS si convive con el QR.
-    if ((code === 'DESCUENTO10' || code === 'CANDY20') && paymentMethod === 'transferencia_qr') {
-      setCouponError('El pago con QR ya incluye 10% off y no se combina con cupones de descuento. Cambiá a Tarjeta o Efectivo para usar el cupón.');
-      return;
-    }
 
     if (code === 'DESCUENTO10') {
       setAppliedCoupon({ code, type: 'discount', value: 0.10 });
@@ -1071,7 +1131,7 @@ const compressImage = (dataUrl: string, maxDim: number = 1024, quality: number =
       const qty = Number(qtyVal);
       
       if (idStr.startsWith('c')) {
-        const combo = COMBOS.find(x => x.id === idStr);
+        const combo = combosList.find(x => x.id === idStr);
         if (combo) {
           sub += combo.price * qty; items += qty;
         }
@@ -1107,9 +1167,10 @@ const compressImage = (dataUrl: string, maxDim: number = 1024, quality: number =
 
   const hasCouponDiscount = !!appliedCoupon && appliedCoupon.type === 'discount';
 
-  // EXCLUYENTE: si hay cupón de descuento, el 10% de QR no aplica (nunca se acumulan).
-  const hasQRDiscount = paymentMethod === 'transferencia_qr' && !hasCouponDiscount;
-  const qrDiscountAmount = hasQRDiscount ? Math.round(subtotal * 0.10) : 0;
+  // El descuento del 10% por pagar con QR fue ELIMINADO a pedido del cliente.
+  // Se dejan las variables en cero para no tocar el resto del calculo.
+  const hasQRDiscount = false;
+  const qrDiscountAmount = 0;
 
   // Al ser excluyentes, como mucho uno de los dos descuentos es distinto de cero,
   // asi que el cupon se calcula siempre sobre el subtotal limpio.
@@ -1250,7 +1311,7 @@ const compressImage = (dataUrl: string, maxDim: number = 1024, quality: number =
       Object.entries(cart).forEach(([idStr, qtyVal]) => {
         const qty = Number(qtyVal);
         if (idStr.startsWith('c')) {
-          const combo = COMBOS.find(x => x.id === idStr);
+          const combo = combosList.find(x => x.id === idStr);
           if (combo) {
             waMsg += `• *[COMBO] ${combo.name}* x${qty} — ${fmt(combo.price * qty)}\n`;
             orderItems.push({ id: combo.id, name: combo.name, qty, price: combo.price });
@@ -1360,6 +1421,7 @@ const compressImage = (dataUrl: string, maxDim: number = 1024, quality: number =
       localStorage.setItem(histKey, JSON.stringify(historyList));
 
       setLastPlacedOrder(simulatedOrder);
+      setTrackerDismissed(false);
       setCart({}); // Reset shopping bag
       // Sin esto el cupon y el pago QR quedaban aplicados al pedido siguiente.
       setAppliedCoupon(null);
@@ -1370,9 +1432,9 @@ const compressImage = (dataUrl: string, maxDim: number = 1024, quality: number =
       setShowCheckoutModal(false);
       setShowOrderSummaryScreen(false);
 
-      // We still offer the WhatsApp dispatcher to establish contact but everything is processed inside the page!
-      const waUrl = `https://wa.me/${KIOSCO_WHATSAPP}?text=${encodeURIComponent(waMsg)}`;
-      window.open(waUrl, '_blank');
+      // El pedido se confirma DENTRO de la app (ya quedó creado en Firestore) y
+      // el cliente lo sigue en vivo en la pantalla de confirmación. Ya no se abre
+      // WhatsApp: el aviso del pedido nuevo le entra al local por el panel.
     };
 
     if (paymentMethod === 'tarjeta_online') {
@@ -2327,7 +2389,7 @@ const compressImage = (dataUrl: string, maxDim: number = 1024, quality: number =
               transition={{ duration: 0.15 }}
               className="p-3 flex flex-col gap-3"
             >
-              {COMBOS.length > 0 && (
+              {combosList.length > 0 && (
                 <>
                 <div className="bg-blue-700 text-white rounded-2xl p-4 shadow mb-2 relative overflow-hidden">
                 <span className="text-3xl absolute right-4 top-4 opacity-15">🎁</span>
@@ -2336,7 +2398,7 @@ const compressImage = (dataUrl: string, maxDim: number = 1024, quality: number =
                 <p className="text-xs text-blue-100 mt-1">Combos cerrados con precios especiales para cuidar tu bolsillo.</p>
               </div>
 
-              {COMBOS.map((c) => (
+              {combosList.map((c) => (
                 <div 
                   key={c.id}
                   className="bg-white rounded-xl border border-slate-200 p-4 shadow-sm flex gap-3 relative hover:border-slate-300 transition-all"
@@ -2375,7 +2437,7 @@ const compressImage = (dataUrl: string, maxDim: number = 1024, quality: number =
               ))}
               </>
               )}
-              {COMBOS.length === 0 && (
+              {combosList.length === 0 && (
               <div className="bg-white rounded-xl border border-slate-200 p-6 text-center text-slate-500">
               <p className="font-bold text-slate-700 mb-1">Todavía no tenemos combos armados</p>
               <p className="text-[12px]">Estamos preparando promociones especiales para vos. ¡Volvé pronto para aprovecharlas!</p>
@@ -2528,7 +2590,7 @@ const compressImage = (dataUrl: string, maxDim: number = 1024, quality: number =
                     {Object.entries(cart).map(([idStr, qtyVal]) => {
                       const qty = Number(qtyVal);
                       if (idStr.startsWith('c')) {
-                        const c = COMBOS.find(x => x.id === idStr);
+                        const c = combosList.find(x => x.id === idStr);
                         if (!c) return null;
                         return (
                           <div key={c.id} className="flex items-center gap-3.5 p-3.5">
@@ -2838,9 +2900,6 @@ const compressImage = (dataUrl: string, maxDim: number = 1024, quality: number =
                         }`}
                       >
                         📱 Pago QR
-                        <span className="absolute -top-1.5 -right-1 bg-green-600 text-white text-[8px] font-black px-1 py-px rounded-full leading-tight shadow-sm">
-                          -10%
-                        </span>
                       </button>
                       <button
                         type="button"
@@ -2875,7 +2934,7 @@ const compressImage = (dataUrl: string, maxDim: number = 1024, quality: number =
                     }`}
                   >
                     <CheckCircle2 size={16} />
-                    Confirmar Pedido por WhatsApp
+                    Confirmar pedido
                   </button>
 
                   <button 
@@ -3292,11 +3351,6 @@ const compressImage = (dataUrl: string, maxDim: number = 1024, quality: number =
                     </button>
                   </div>
                   {couponError && <p role="alert" className="text-xs text-red-600 font-bold mt-1.5">{couponError}</p>}
-                  {hasCouponDiscount && (
-                    <p className="text-xs text-slate-600 font-semibold mt-1.5 leading-relaxed">
-                      Este cupón no se combina con el 10% de Pago QR: se aplica uno u otro.
-                    </p>
-                  )}
                   {appliedCoupon && (
                     <div className="bg-emerald-50 border border-emerald-100 p-2 rounded-xl mt-2 flex items-center justify-between text-xs text-emerald-800 font-bold">
                       <span>Cupón ACTIVO: {appliedCoupon.code}</span>
@@ -3563,7 +3617,7 @@ const compressImage = (dataUrl: string, maxDim: number = 1024, quality: number =
                   </div>
                   <h3 className="font-extrabold text-base leading-tight">Verificá tu pedido</h3>
                   <p className="text-[10px] text-slate-400 mt-1 leading-normal">
-                    Revisá los detalles de tu orden antes de enviarla a nuestros asesores por WhatsApp.
+                    Revisá los detalles de tu orden antes de confirmar. La seguís en vivo desde la app.
                   </p>
                 </div>
               ) : (
@@ -3574,7 +3628,7 @@ const compressImage = (dataUrl: string, maxDim: number = 1024, quality: number =
                   </div>
                   <h3 className="font-extrabold text-base leading-tight">Datos obligatorios del pedido</h3>
                   <p className="text-[10px] text-slate-400 mt-1 leading-normal">
-                    Completá para procesar tu orden y despachar vía WhatsApp de forma segura.
+                    Completá para confirmar tu orden y seguirla en vivo desde la app.
                   </p>
                 </div>
               )}
@@ -3590,7 +3644,7 @@ const compressImage = (dataUrl: string, maxDim: number = 1024, quality: number =
                         let name = '';
                         let itemPrice = 0;
                         if (idStr.startsWith('c')) {
-                          const combo = COMBOS.find(x => x.id === idStr);
+                          const combo = combosList.find(x => x.id === idStr);
                           if (combo) {
                             name = combo.name;
                             itemPrice = combo.price;
@@ -3671,7 +3725,7 @@ const compressImage = (dataUrl: string, maxDim: number = 1024, quality: number =
                       {deliveryMode === 'envio' && (
                         <div className="flex items-center justify-between text-slate-500">
                           <span>Costo de envío:</span>
-                          <span>{dynamicShippingCost > 0 ? fmt(dynamicShippingCost) : 'Gratis'}</span>
+                          <span>{isFreeShipping ? 'Gratis' : fmt(dynamicShippingCost)}</span>
                         </div>
                       )}
                       {hasQRDiscount && (
@@ -3812,7 +3866,7 @@ const compressImage = (dataUrl: string, maxDim: number = 1024, quality: number =
                           {(deliveryZones && deliveryZones.length > 0) ? (
                             deliveryZones.map(z => (
                               <option key={z.id} value={z.name}>
-                                {z.name} ({z.km} km) — ${z.price.toLocaleString('es-AR')}
+                                {z.name} ({Math.round(z.km * 1000).toLocaleString('es-AR')} m) — ${z.price.toLocaleString('es-AR')}
                               </option>
                             ))
                           ) : (
@@ -3839,7 +3893,7 @@ const compressImage = (dataUrl: string, maxDim: number = 1024, quality: number =
                               };
                               return (
                                 <option key={name} value={name}>
-                                  {name} ({fallbackKms[name]} km) — ${fallbackPrices[name].toLocaleString('es-AR')}
+                                  {name} ({(fallbackKms[name] * 1000).toLocaleString('es-AR')} m) — ${fallbackPrices[name].toLocaleString('es-AR')}
                                 </option>
                               );
                             })
@@ -3898,7 +3952,7 @@ const compressImage = (dataUrl: string, maxDim: number = 1024, quality: number =
 
                     <div className="bg-blue-50 border border-blue-200 text-[10.5px] text-blue-950 p-3 rounded-xl font-bold flex justify-between items-center mt-3">
                       <span>Costo de Envío:</span>
-                      <span className="font-extrabold text-blue-700 font-mono text-xs">{dynamicShippingCost > 0 ? fmt(dynamicShippingCost) : 'Gratis'}</span>
+                      <span className="font-extrabold text-blue-700 font-mono text-xs">{isFreeShipping ? 'Gratis' : fmt(dynamicShippingCost)}</span>
                     </div>
                   </div>
                 ) : (
@@ -3937,9 +3991,6 @@ const compressImage = (dataUrl: string, maxDim: number = 1024, quality: number =
                       }`}
                     >
                       📱 Pago QR
-                      <span className="absolute -top-1.5 -right-1 bg-green-600 text-white text-[8px] font-black px-1 py-px rounded-full leading-tight shadow-sm">
-                        -10%
-                      </span>
                     </button>
                     <button
                       type="button"
@@ -4201,11 +4252,11 @@ const compressImage = (dataUrl: string, maxDim: number = 1024, quality: number =
 
       {/* POST-ORDER CONFIRMATION VIEW (SUCCESS STATE BANNER) */}
       <AnimatePresence>
-        {lastPlacedOrder && liveOrder && (
+        {liveOrder && !trackerDismissed && (
           <Modal
             id="order-success-screen"
             className="fixed inset-0 bg-slate-100 z-50 flex flex-col"
-            onClose={() => setLastPlacedOrder(null)}
+            onClose={() => { setTrackerDismissed(true); setLastPlacedOrder(null); }}
             closeOnBackdrop={false}
             labelledBy="order-success-screen-title"
           >
@@ -4213,16 +4264,16 @@ const compressImage = (dataUrl: string, maxDim: number = 1024, quality: number =
               <div className="w-14 h-14 bg-white/20 rounded-full flex items-center justify-center text-white mb-3 shadow animate-bounce">
                 <CheckCircle2 size={32} />
               </div>
-              <h2 id="order-success-screen-title" className="text-xl font-extrabold">&iexcl;Pedido Enviado con &eacute;xito!</h2>
+              <h2 id="order-success-screen-title" className="text-xl font-extrabold">&iexcl;Pedido confirmado!</h2>
               <p className="text-xs text-emerald-100 mt-1 max-w-[280px]">
-                Te contactamos v&iacute;a WhatsApp para coordinar la entrega en breve.
+                Segu&iacute; el estado de tu pedido ac&aacute; abajo &mdash; se actualiza en vivo.
               </p>
             </div>
 
             <div className="p-4 flex-1 overflow-y-auto space-y-4">
               {/* STATUS TRACKER STEPPER */}
               <div className="bg-white rounded-2xl border border-slate-200 shadow-sm p-4 text-left">
-                <span className="text-[10px] font-black tracking-widest text-slate-500 uppercase block mb-3 text-center">🛵 Seguimiento de tu Env&iacute;o</span>
+                <span className="text-[10px] font-black tracking-widest text-slate-500 uppercase block mb-3 text-center">{liveOrder.delivery === 'envio' ? '🛵 Seguimiento de tu envío' : '🏪 Seguimiento de tu pedido'}</span>
                 
                 {liveOrder.status === 'cancelado' ? (
                   <div className="bg-red-50 border border-red-200 text-red-700 p-3 rounded-xl text-xs font-bold text-center">
@@ -4234,9 +4285,11 @@ const compressImage = (dataUrl: string, maxDim: number = 1024, quality: number =
                       {/* Connecting Line */}
                       <div className="absolute top-4 left-6 right-6 h-0.5 bg-slate-200 -z-0" />
                       
-                      {['Recibido', 'Confirmado', 'Preparando', 'En camino', 'Entregado'].map((step, i) => {
-                        const statusMap: Record<string, number> = { 'pendiente': 0, 'confirmado': 1, 'listo': 2, 'entregado': 4 };
-                        const currentStep = statusMap[liveOrder.status] ?? 0;
+                      {(liveOrder.delivery === 'envio'
+                        ? ['Recibido', 'Confirmado', 'Preparando', 'En camino', 'Entregado']
+                        : ['Recibido', 'Confirmado', 'Preparando', 'Listo', 'Entregado']
+                      ).map((step, i) => {
+                        const currentStep = orderStatusStep(liveOrder.status);
                         
                         return (
                           <div key={step} className="flex flex-col items-center gap-1.5 flex-1 relative z-10">
@@ -4306,9 +4359,12 @@ const compressImage = (dataUrl: string, maxDim: number = 1024, quality: number =
                 <div className="flex justify-between items-center py-2 text-xs flex-wrap gap-1">
                   <span className="text-slate-500 font-bold uppercase">Estatus pedido</span>
                   <span className="text-xs font-black text-blue-600 bg-blue-50 px-2.5 py-0.5 rounded leading-none border border-blue-100 font-sans">
-                    {liveOrder.status === 'pendiente' ? '⏳ Pendiente de confirmación' :
-                     liveOrder.status === 'confirmado' ? '👍 Confirmado por el Kiosco' :
-                     liveOrder.status === 'listo' ? '📦 Pedido empaquetado preparándose' :
+                    {liveOrder.status === 'pending_confirmation' ? '⏳ Programado para mañana' :
+                     liveOrder.status === 'pendiente' ? '⏳ Recibido — esperando al local' :
+                     liveOrder.status === 'confirmado' ? '👍 Confirmado por el kiosco' :
+                     liveOrder.status === 'en_preparacion' ? '👨‍🍳 En preparación' :
+                     liveOrder.status === 'en_camino' ? '🛵 En camino a tu dirección' :
+                     liveOrder.status === 'listo' ? '📦 Listo para retirar' :
                      liveOrder.status === 'entregado' ? '🎉 Entregado con éxito' :
                      liveOrder.status === 'cancelado' ? '❌ Cancelado' : liveOrder.status}
                   </span>
@@ -4316,7 +4372,7 @@ const compressImage = (dataUrl: string, maxDim: number = 1024, quality: number =
               </div>
 
               <button 
-                onClick={() => setLastPlacedOrder(null)}
+                onClick={() => { setTrackerDismissed(true); setLastPlacedOrder(null); }}
                 className="w-full bg-blue-600 hover:bg-blue-700 text-white rounded-xl py-3.5 px-4 font-bold text-xs mt-6 shadow flex items-center justify-center gap-1 cursor-pointer"
               >
                 Volver al cat&aacute;logo
@@ -4325,6 +4381,16 @@ const compressImage = (dataUrl: string, maxDim: number = 1024, quality: number =
           </Modal>
         )}
       </AnimatePresence>
+
+      {/* Botón flotante para reabrir el seguimiento en vivo si el cliente lo cerró */}
+      {liveOrder && trackerDismissed && (
+        <button
+          onClick={() => setTrackerDismissed(false)}
+          className="fixed bottom-24 right-4 z-40 bg-blue-600 hover:bg-blue-700 text-white rounded-full shadow-lg py-3 px-4 text-xs font-black flex items-center gap-2 cursor-pointer"
+        >
+          🛵 Seguir mi pedido
+        </button>
+      )}
 
       {/* DIRECT IN-LINE STOREFRONT GONDOLA / PRODUCT MANAGER FORM */}
       <AnimatePresence>

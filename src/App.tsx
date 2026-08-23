@@ -3,7 +3,7 @@ import { LazyMotion, domAnimation } from 'motion/react';
 import { useAdmin } from './hooks/useAdmin';
 import { Storefront } from './components/Storefront';
 import Onboarding from './components/Onboarding';
-import { Product, Order, PromoBanner, DeliveryZone } from './types';
+import { Product, Order, PromoBanner, DeliveryZone, Combo } from './types';
 import { DEFAULT_PRODUCTS, getFallbackStoreImage } from './data';
 import { playChime } from './utils/audio';
 import { authedFetch } from './utils/authedFetch';
@@ -48,7 +48,10 @@ export default function App() {
     const viewParam = params.get('view');
     if (viewParam === 'storefront') return 'storefront';
     if (viewParam === 'admin') return 'admin';
-    return 'admin';
+    // Por defecto abre la TIENDA: así un cliente no descarga el chunk del panel
+    // ni ve el flash "Cargando panel". El panel se abre con ?view=admin (o al
+    // iniciar sesión como admin).
+    return 'storefront';
   });
 
   const [showOnboarding, setShowOnboarding] = useState<boolean>(() => {
@@ -132,12 +135,43 @@ export default function App() {
     isAdminRef.current = isAdmin;
   }, [isAdmin]);
 
+  // Pedido activo del cliente, para seguirlo en vivo (docId de Firestore).
+  const [activeOrderDocId, setActiveOrderDocId] = useState<string | null>(() => {
+    try { return localStorage.getItem('origenes_active_order_id'); } catch { return null; }
+  });
+
+  // Seguimiento EN VIVO del propio pedido del cliente (no-admin): se suscribe a
+  // UN solo documento por su ID —habilitado por las reglas con 'allow get'— y
+  // refleja en tiempo real los cambios de estado que hace el local, sin poder
+  // listar ni ver los pedidos de otros.
+  useEffect(() => {
+    if (isAdmin || !activeOrderDocId) return;
+    const unsub = onSnapshot(doc(db, 'orders', activeOrderDocId), (snap) => {
+      if (!snap.exists()) return;
+      const live = { ...(snap.data() as Order), docId: snap.id };
+      // Pedido finalizado: se deja de recordar como "activo" para no re-suscribir
+      // en la próxima sesión (el estado final igual se ve mientras la app está abierta).
+      if (live.status === 'entregado' || live.status === 'cancelado') {
+        try { localStorage.removeItem('origenes_active_order_id'); } catch (e) { /* sin storage */ }
+      }
+      setOrders(prev => {
+        const idx = prev.findIndex(o => o.docId === live.docId || o.id === live.id);
+        if (idx === -1) return [live, ...prev];
+        const copy = [...prev];
+        copy[idx] = { ...copy[idx], ...live };
+        return copy;
+      });
+    }, (err) => console.warn('Seguimiento en vivo del pedido no disponible:', err.message));
+    return () => unsub();
+  }, [isAdmin, activeOrderDocId]);
+
   const [signInState, setSignInState] = useState<'idle' | 'pending' | 'redirecting' | 'error'>('idle');
   const [signInError, setSignInError] = useState<string | null>(null);
 
   const [newOrderToast, setNewOrderToast] = useState<Order | null>(null);
 
   const [deliveryZones, setDeliveryZones] = useState<DeliveryZone[]>([]);
+  const [combos, setCombos] = useState<Combo[]>([]);
   const [deliveryCutoffHour, setDeliveryCutoffHour] = useState<number>(21);
 
   useEffect(() => {
@@ -406,6 +440,18 @@ export default function App() {
       setDeliveryZones(fallbackZones);
     });
 
+    // Combos armados desde el panel administrativo (coleccion 'combos').
+    const unsubCombos = onSnapshot(collection(db, 'combos'), (snapshot) => {
+      const combosList: Combo[] = [];
+      snapshot.forEach(d => {
+        combosList.push(d.data() as Combo);
+      });
+      combosList.sort((a, b) => a.price - b.price);
+      setCombos(combosList);
+    }, (error) => {
+      console.warn("Combos read restriction: ", error.message);
+    });
+
     const unsubSettings = onSnapshot(doc(db, 'settings', 'delivery'), (docSnap) => {
       if (docSnap.exists()) {
         const data = docSnap.data();
@@ -430,6 +476,7 @@ export default function App() {
       unsubOrders();
       unsubBanners();
       unsubZones();
+      unsubCombos();
       unsubSettings();
     };
   }, []);
@@ -693,6 +740,9 @@ export default function App() {
       // Se compara por identidad de objeto, no por Order.id: ese número puede
       // repetirse entre pedidos.
       setOrders(prev => prev.map(o => (o === finalOrder ? { ...o, docId: created.id } : o)));
+      // Guardamos el pedido activo para que el cliente lo siga en vivo.
+      try { localStorage.setItem('origenes_active_order_id', created.id); } catch (e) { /* almacenamiento no disponible */ }
+      setActiveOrderDocId(created.id);
       playChime();
 
       fetch('/api/facturador/report-sale', {
@@ -868,6 +918,7 @@ export default function App() {
             signInError={signInError}
             onSignOut={handleSignOut}
             deliveryZones={deliveryZones}
+            combos={combos}
             isAdmin={isAdmin}
             onDbCategoryChange={setDbCategory}
             hasMoreProducts={hasMore}
@@ -901,6 +952,7 @@ export default function App() {
             onDeleteBanner={handleDeleteBanner}
             onSyncStockWithExternalFacturador={handleSyncStockWithExternalFacturador}
             deliveryZones={deliveryZones}
+            combos={combos}
             isAdmin={isAdmin}
             isSuperAdmin={isSuperAdmin}
             onDbCategoryChange={setDbCategory}

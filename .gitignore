@@ -6,3 +6,6 @@ coverage/
 *.log
 .env*
 !.env.example
+
+# Repo git suelto que quedo dentro de la carpeta; no es parte de la app.
+origenes kiosco/

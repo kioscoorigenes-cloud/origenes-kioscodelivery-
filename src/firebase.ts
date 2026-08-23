@@ -1,6 +1,7 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
 import { getFirestore } from 'firebase/firestore';
+import { getStorage } from 'firebase/storage';
 import firebaseConfig from '../firebase-applet-config.json';
 
 // Initialize Firebase App SDK
@@ -9,6 +10,8 @@ const app = initializeApp(firebaseConfig);
 // Initialize services
 export const db = getFirestore(app, firebaseConfig.firestoreDatabaseId); /* CRITICAL: The app will break without this line */
 export const auth = getAuth();
+// Storage: donde se suben las fotos de productos cargadas desde el panel.
+export const storage = getStorage(app);
 
 export enum OperationType {
   CREATE = 'create',

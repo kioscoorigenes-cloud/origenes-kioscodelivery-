@@ -80,7 +80,7 @@ service cloud.firestore {
               o.delivery is string && (o.delivery == 'envio' || o.delivery == 'retiro') &&
               o.shipping is number && o.shipping >= 0 &&
               o.total is number && o.total >= 0 &&
-              o.status is string && (o.status == 'pendiente' || o.status == 'confirmado' || o.status == 'listo' || o.status == 'entregado' || o.status == 'cancelado' || o.status == 'pending_confirmation') &&
+              o.status is string && (o.status == 'pendiente' || o.status == 'confirmado' || o.status == 'en_preparacion' || o.status == 'en_camino' || o.status == 'listo' || o.status == 'entregado' || o.status == 'cancelado' || o.status == 'pending_confirmation') &&
               o.customerName is string && o.customerName.size() > 0 && o.customerName.size() <= 200 &&
               o.customerPhone is string && o.customerPhone.size() > 0 && o.customerPhone.size() <= 30 &&
               (o.customerLocation == null || (o.customerLocation is string && o.customerLocation.size() <= 500)) &&
@@ -106,8 +106,13 @@ service cloud.firestore {
 
     match /orders/{orderId} {
       // Orders carry customer name, phone and address: never public.
-      // Only an administrator may read or list them.
-      allow read: if isAdmin();
+      // 'get' (leer UN pedido por su ID no adivinable de Firestore) se habilita
+      // para que el cliente siga SU pedido en vivo con el ID que guardó al
+      // comprar — es como un link de seguimiento. 'list' (enumerar/consultar la
+      // colección) sigue restringido solo al administrador, así nadie puede
+      // barrer los pedidos ajenos.
+      allow get: if true;
+      allow list: if isAdmin();
       // Any customer can create an order, but only with whitelisted fields
       // and a forced non-privileged initial status.
       allow create: if isValidOrder(request.resource.data) &&
@@ -123,6 +128,26 @@ service cloud.firestore {
     match /banners/{bannerId} {
       allow read: if true;
       allow write: if isAdmin();
+    }
+
+    // Combos de ahorro creados desde el panel administrativo.
+    // Los IDs empiezan con 'c' (ej: c_1724100000000): asi el carrito de la
+    // tienda los distingue de los productos numericos.
+    function isValidCombo(c) {
+      return c.id is string && c.id.size() > 0 && c.id.size() <= 128 &&
+             c.name is string && c.name.size() > 0 && c.name.size() <= 200 &&
+             c.label is string && c.label.size() <= 20 &&
+             c.items is string && c.items.size() > 0 && c.items.size() <= 1000 &&
+             c.price is number && c.price > 0 &&
+             c.orig is number && c.orig > 0 &&
+             c.saving is number && c.saving >= 0 &&
+             (c.active == null || c.active is bool);
+    }
+
+    match /combos/{comboId} {
+      allow read: if true;
+      allow create, update: if isAdmin() && isValidCombo(request.resource.data);
+      allow delete: if isAdmin();
     }
 
     // Schema and Type Verification for DeliveryZones

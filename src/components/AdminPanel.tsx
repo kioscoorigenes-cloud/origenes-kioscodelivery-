@@ -8,14 +8,16 @@ import {
   Filter, Play, Sparkles, HelpCircle,
     Mail, Eye, EyeOff, ShieldCheck
 } from 'lucide-react';
-import { Product, Order, Category, PromoBanner, BillingConfig, DeliveryZone } from '../types';
-import { db } from '../firebase';
+import { Product, Order, Category, PromoBanner, BillingConfig, DeliveryZone, Combo } from '../types';
+import { db, storage } from '../firebase';
+import { ref as storageFileRef, uploadBytes, getDownloadURL } from 'firebase/storage';
 import { doc, getDoc, setDoc, collection, onSnapshot, deleteDoc } from 'firebase/firestore';
 import { auth } from '../firebase';
 import { BOOTSTRAP_ADMIN_EMAILS } from '../hooks/useAdmin';
 import { signInWithEmailAndPassword, sendPasswordResetEmail } from 'firebase/auth';
 import { CATS, CAT_ABBR, CAT_BG, getFallbackStoreImage } from '../data';
 import { playChime } from '../utils/audio';
+import { orderStatusLabel } from '../utils/orderStatus';
 import { authedFetch } from '../utils/authedFetch';
 import { Modal } from './Modal';
 import origenesLogo from '../assets/images/origenes_emblem_128.png';
@@ -27,6 +29,31 @@ interface TemplateProduct {
   price: number;
   desc: string;
   image: string;
+}
+
+/**
+ * Comprime una foto del dispositivo antes de subirla: la reduce a un maximo de
+ * 800px y la convierte a JPEG. Una foto de celular de ~4MB queda en ~100KB,
+ * lo que hace que el catalogo cargue rapido y no infle la base de datos.
+ */
+async function compressImageForUpload(file: File, maxDim = 800, quality = 0.82): Promise<Blob> {
+  const bitmap = await createImageBitmap(file);
+  try {
+    const scale = Math.min(1, maxDim / Math.max(bitmap.width, bitmap.height));
+    const w = Math.max(1, Math.round(bitmap.width * scale));
+    const h = Math.max(1, Math.round(bitmap.height * scale));
+    const canvas = document.createElement('canvas');
+    canvas.width = w;
+    canvas.height = h;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error('Canvas 2D no disponible');
+    ctx.drawImage(bitmap, 0, 0, w, h);
+    const blob: Blob | null = await new Promise((res) => canvas.toBlob(res, 'image/jpeg', quality));
+    if (!blob) throw new Error('No se pudo comprimir la imagen');
+    return blob;
+  } finally {
+    bitmap.close();
+  }
 }
 
 const TEMPLATE_PRODUCTS: TemplateProduct[] = [
@@ -106,6 +133,7 @@ interface AdminPanelProps {
   onDeleteBanner?: (bannerId: string) => void;
   onSyncStockWithExternalFacturador?: () => Promise<{ success: boolean; message: string; count: number }>;
   deliveryZones?: DeliveryZone[];
+  combos?: Combo[];
   isAdmin?: boolean;
   isSuperAdmin?: boolean;
   onDbCategoryChange?: (category: string) => void;
@@ -137,6 +165,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   onDeleteBanner,
   onSyncStockWithExternalFacturador,
   deliveryZones = [],
+  combos = [],
   isAdmin,
   isSuperAdmin,
   onDbCategoryChange,
@@ -231,6 +260,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [formCat, setFormCat] = useState<string>('');
   const [formDesc, setFormDesc] = useState<string>('');
   const [formImage, setFormImage] = useState<string>('');
+  const [isUploadingPhoto, setIsUploadingPhoto] = useState<boolean>(false);
   const [formCodigoFacturador, setFormCodigoFacturador] = useState<string>('');
 
   // Modal Deletion & Facturador connection states
@@ -618,11 +648,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [zonePriceInput, setZonePriceInput] = useState<string>('');
   const [savingZone, setSavingZone] = useState<boolean>(false);
 
-  // Auto-calculate price when KM changes (formula: 4000 + 1000 * km)
+  // Auto-calculo del precio cuando cambian los METROS:
+  // base $4.000 + $100 por cada 100 metros (empezados).
   useEffect(() => {
-    const kmNum = parseFloat(zoneKmInput);
-    if (!isNaN(kmNum)) {
-      const calculatedPrice = 4000 + 1000 * kmNum;
+    const metersNum = parseFloat(zoneKmInput);
+    if (!isNaN(metersNum)) {
+      const calculatedPrice = 4000 + Math.ceil(metersNum / 100) * 100;
       setZonePriceInput(calculatedPrice.toString());
     }
   }, [zoneKmInput]);
@@ -640,7 +671,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       const zoneDoc: DeliveryZone = {
         id: zoneId,
         name: zoneNameInput.trim(),
-        km: parseFloat(zoneKmInput),
+        km: parseFloat(zoneKmInput) / 1000, // el input esta en METROS; se guarda en km por compatibilidad
         price: parseFloat(zonePriceInput)
       };
 
@@ -687,7 +718,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const handleStartEditZone = (zone: DeliveryZone) => {
     setEditingZone(zone);
     setZoneNameInput(zone.name);
-    setZoneKmInput(zone.km.toString());
+    setZoneKmInput(Math.round(zone.km * 1000).toString());
     setZonePriceInput(zone.price.toString());
   };
 
@@ -696,6 +727,104 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     setZoneNameInput('');
     setZoneKmInput('');
     setZonePriceInput('');
+  };
+
+  // ============ COMBOS DE AHORRO (gestion desde el panel) ============
+  const [editingCombo, setEditingCombo] = useState<Combo | null>(null);
+  const [comboNameInput, setComboNameInput] = useState<string>('');
+  const [comboLabelInput, setComboLabelInput] = useState<string>('');
+  const [comboItemsInput, setComboItemsInput] = useState<string>('');
+  const [comboPriceInput, setComboPriceInput] = useState<string>('');
+  const [comboOrigInput, setComboOrigInput] = useState<string>('');
+  const [savingCombo, setSavingCombo] = useState<boolean>(false);
+
+  const resetComboForm = () => {
+    setEditingCombo(null);
+    setComboNameInput('');
+    setComboLabelInput('');
+    setComboItemsInput('');
+    setComboPriceInput('');
+    setComboOrigInput('');
+  };
+
+  const handleSaveCombo = async (e: React.FormEvent) => {
+    e.preventDefault();
+    const name = comboNameInput.trim();
+    const label = comboLabelInput.trim().toUpperCase();
+    const items = comboItemsInput.trim();
+    const price = Math.round(parseFloat(comboPriceInput));
+    const orig = Math.round(parseFloat(comboOrigInput));
+    if (!name || !items || isNaN(price) || isNaN(orig)) {
+      showToast('Completa nombre, contenido y los dos precios \u274C');
+      return;
+    }
+    if (price <= 0 || orig <= 0) {
+      showToast('Los precios tienen que ser mayores a cero \u274C');
+      return;
+    }
+    if (orig <= price) {
+      showToast('El precio normal (sin combo) tiene que ser MAYOR al precio del combo \u274C');
+      return;
+    }
+    setSavingCombo(true);
+    try {
+      // Los IDs de combos empiezan con 'c': asi el carrito los distingue de los productos.
+      const comboId = editingCombo ? editingCombo.id : `c_${Date.now()}`;
+      const comboDoc: Combo = {
+        id: comboId,
+        name,
+        label: label || 'COMBO',
+        items,
+        price,
+        orig,
+        saving: orig - price,
+        active: editingCombo ? (editingCombo.active !== false) : true,
+      };
+      await setDoc(doc(db, 'combos', comboId), comboDoc);
+      showToast(editingCombo ? '\ud83c\udf81 \u00a1Combo actualizado!' : '\ud83c\udf81 \u00a1Combo creado! Ya se ve en la tienda.');
+      resetComboForm();
+    } catch (err) {
+      console.error('Error guardando combo:', err);
+      showToast('Error al guardar el combo \u274C');
+    } finally {
+      setSavingCombo(false);
+    }
+  };
+
+  const handleToggleComboActive = async (combo: Combo) => {
+    try {
+      await setDoc(doc(db, 'combos', combo.id), { ...combo, active: combo.active === false });
+      showToast(combo.active === false ? '\u2705 Combo activado' : '\u23f8\ufe0f Combo pausado (no se muestra en la tienda)');
+    } catch (err) {
+      console.error('Error cambiando estado del combo:', err);
+      showToast('Error al cambiar el estado \u274C');
+    }
+  };
+
+  const handleStartEditCombo = (combo: Combo) => {
+    setEditingCombo(combo);
+    setComboNameInput(combo.name);
+    setComboLabelInput(combo.label);
+    setComboItemsInput(combo.items);
+    setComboPriceInput(combo.price.toString());
+    setComboOrigInput(combo.orig.toString());
+  };
+
+  const handleDeleteCombo = (combo: Combo) => {
+    setCustomConfirm({
+      title: 'Eliminar combo',
+      message: `\u00bfSeguro que queres eliminar el combo "${combo.name}"? Esta accion no se puede deshacer.`,
+      onConfirm: async () => {
+        try {
+          await deleteDoc(doc(db, 'combos', combo.id));
+          showToast('\ud83d\uddd1\ufe0f Combo eliminado');
+          if (editingCombo?.id === combo.id) resetComboForm();
+        } catch (err) {
+          console.error('Error eliminando combo:', err);
+          showToast('Error al eliminar el combo \u274C');
+        }
+      }
+    });
   };
 
 
@@ -879,6 +1008,56 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     setFormInStock(true);
     setFormValidationMsg('');
     setFormCodigoFacturador('');
+  };
+
+  // Foto propia desde el dispositivo: comprime y sube a Firebase Storage.
+  // Si Storage no esta disponible, guarda la foto comprimida dentro del
+  // producto (fallback), asi la funcion nunca deja de andar.
+  const handleDevicePhotoSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    e.target.value = '';
+    if (!file) return;
+    if (!file.type.startsWith('image/')) {
+      showToast('El archivo tiene que ser una imagen \u274C');
+      return;
+    }
+    setIsUploadingPhoto(true);
+    try {
+      let blob: Blob;
+      try {
+        blob = await compressImageForUpload(file);
+      } catch (compressErr) {
+        console.error('No se pudo comprimir, uso el archivo original:', compressErr);
+        blob = file;
+      }
+      try {
+        const path = `products/${Date.now()}_${Math.random().toString(36).slice(2, 8)}.jpg`;
+        const fileRef = storageFileRef(storage, path);
+        await uploadBytes(fileRef, blob, {
+          contentType: blob.type || 'image/jpeg',
+          cacheControl: 'public, max-age=31536000',
+        });
+        const url = await getDownloadURL(fileRef);
+        setFormImage(url);
+        showToast('\ud83d\udcf7 \u00a1Foto subida con exito!');
+      } catch (uploadErr) {
+        console.error('Storage no disponible, uso fallback local:', uploadErr);
+        if (blob.size > 700 * 1024) {
+          showToast('La foto es muy pesada y Storage no esta disponible \u274C');
+          return;
+        }
+        const dataUrl: string = await new Promise((res, rej) => {
+          const fr = new FileReader();
+          fr.onerror = () => rej(new Error('No se pudo leer la foto'));
+          fr.onloadend = () => res(String(fr.result));
+          fr.readAsDataURL(blob);
+        });
+        setFormImage(dataUrl);
+        showToast('\ud83d\udcf7 Foto cargada (guardada dentro del producto)');
+      }
+    } finally {
+      setIsUploadingPhoto(false);
+    }
   };
 
   // AI single-image generation handler
@@ -1683,7 +1862,7 @@ className="bg-slate-800 hover:bg-slate-700 text-sky-400 border border-slate-700/
                         o.status === 'listo' ? 'bg-blue-100 text-blue-700' :
                         o.status === 'entregado' ? 'bg-emerald-100 text-emerald-800' : 'bg-blue-100 text-blue-700'
                       }`}>
-                        {o.status === 'pending_confirmation' ? 'Envío Mañana' : o.status}
+                        {o.status === 'pending_confirmation' ? 'Envío Mañana' : orderStatusLabel(o.status, o.delivery)}
                       </span>
                     </div>
                   </div>
@@ -1735,12 +1914,14 @@ className="bg-slate-800 hover:bg-slate-700 text-sky-400 border border-slate-700/
             
             {/* Status Segment Filtering chip bar */}
             <div className="flex gap-1.5 overflow-x-auto select-none no-scrollbar pb-1">
-              {(['all', 'pending_confirmation', 'pendiente', 'confirmado', 'listo', 'entregado', 'cancelado'] as const).map(s => {
+              {(['all', 'pending_confirmation', 'pendiente', 'confirmado', 'en_preparacion', 'en_camino', 'listo', 'entregado', 'cancelado'] as const).map(s => {
                 const labels: Record<string, string> = {
                   all: 'Todos',
                   pending_confirmation: 'Envío Mañana ⏰',
-                  pendiente: 'Pendientes 📥',
+                  pendiente: 'Recibidos 📥',
                   confirmado: 'Confirmados ✅',
+                  en_preparacion: 'En preparación 👨‍🍳',
+                  en_camino: 'En camino 🛵',
                   listo: 'Listos 📦',
                   entregado: 'Entregados 🚚',
                   cancelado: 'Cancelados ❌'
@@ -1783,7 +1964,7 @@ className="bg-slate-800 hover:bg-slate-700 text-sky-400 border border-slate-700/
                         o.status === 'listo' ? 'bg-blue-100 text-blue-700' :
                         o.status === 'entregado' ? 'bg-emerald-100 text-emerald-800' : 'bg-blue-100 text-blue-700'
                       }`}>
-                        {o.status === 'pending_confirmation' ? 'Envío Mañana' : o.status}
+                        {o.status === 'pending_confirmation' ? 'Envío Mañana' : orderStatusLabel(o.status, o.delivery)}
                       </span>
                     </div>
                   </div>
@@ -2316,10 +2497,10 @@ className="bg-slate-800 hover:bg-slate-700 text-sky-400 border border-slate-700/
                       resetFormState();
                       setShowingAddForm(true);
                     }}
-                    className="bg-blue-600 hover:bg-blue-700 text-white font-extrabold text-xs px-3 rounded-xl flex items-center gap-1 shadow-md animate-pulse"
+                    className="bg-blue-600 hover:bg-blue-700 text-white font-extrabold text-xs px-4 py-2.5 rounded-xl flex items-center gap-1.5 shadow-md shrink-0"
                   >
-                    <Plus size={14} strokeWidth={2.5} />
-                    Nuevo
+                    <Plus size={15} strokeWidth={3} />
+                    Agregar Producto
                   </button>
                 </div>
 
@@ -2439,7 +2620,7 @@ className="bg-slate-800 hover:bg-slate-700 text-sky-400 border border-slate-700/
                     </div>
                     <div className="bg-white/80 p-2 rounded-xl border border-slate-100 flex items-start gap-1.5">
                       <span className="text-blue-500">➕</span>
-                      <span><b>Agregar Producto:</b> Hacé clic en el botón azul arriba a la derecha <b>"+ Nuevo"</b> para cargar un producto.</span>
+                      <span><b>Agregar Producto:</b> Hacé clic en el botón azul arriba a la derecha <b>"+ Agregar Producto"</b> para cargar un producto.</span>
                     </div>
                     <div className="bg-white/80 p-2 rounded-xl border border-slate-100 flex items-start gap-1.5">
                       <span className="text-blue-600">🗑️</span>
@@ -2822,7 +3003,7 @@ className="bg-slate-800 hover:bg-slate-700 text-sky-400 border border-slate-700/
                   🛵 Zonas de Entrega & Envío
                 </h3>
                 <p className="text-[10px] text-slate-500 font-bold uppercase mt-1 leading-normal font-sans">
-                  Precio Base: $4.000 + ($1.000 por km)
+                  Precio Base: $4.000 + $100 por cada 100 metros
                 </p>
               </div>
             </div>
@@ -2873,7 +3054,7 @@ className="bg-slate-800 hover:bg-slate-700 text-sky-400 border border-slate-700/
                     {editingZone ? '✏️ Editar Zona' : '➕ Nueva Zona de Envío'}
                   </h4>
                   <p className="text-[11px] text-slate-500 leading-relaxed mt-1">
-                    Definí el nombre de la zona, la distancia promedio en km y el precio del envío. 
+                    Definí el nombre de la zona y la distancia en metros: el precio se calcula solo, cada 100 metros. 
                   </p>
                 </div>
 
@@ -2896,16 +3077,17 @@ className="bg-slate-800 hover:bg-slate-700 text-sky-400 border border-slate-700/
                   <div className="grid grid-cols-2 gap-3">
                     <div>
                       <label htmlFor="zone-km" className="text-[9.5px] font-bold text-slate-500 uppercase tracking-wide block mb-1">
-                        Distancia (km)
+                        Distancia (metros)
                       </label>
                       <input
                         id="zone-km"
                         type="number"
-                        step="0.1"
+                        step="50"
+                        min="0"
                         required
                         value={zoneKmInput}
                         onChange={(e) => setZoneKmInput(e.target.value)}
-                        placeholder="Ej: 3"
+                        placeholder="Ej: 1500"
                         className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 focus:outline-hidden focus:ring-1 focus:ring-slate-400 focus:border-slate-400 text-xs font-bold font-mono"
                       />
                     </div>
@@ -2975,7 +3157,7 @@ className="bg-slate-800 hover:bg-slate-700 text-sky-400 border border-slate-700/
                           {zone.name}
                         </span>
                         <span className="text-[9.5px] font-mono text-slate-500 font-bold uppercase block mt-0.5">
-                          Distancia: {zone.km} km
+                          Distancia: {Math.round(zone.km * 1000).toLocaleString('es-AR')} m
                         </span>
                       </div>
                       
@@ -3008,6 +3190,215 @@ className="bg-slate-800 hover:bg-slate-700 text-sky-400 border border-slate-700/
                   {deliveryZones.length === 0 && (
                     <div className="text-center py-8 text-slate-400 font-bold text-xs">
                       No hay zonas cargadas. Creá una usando el formulario.
+                    </div>
+                  )}
+                </div>
+              </div>
+
+            </div>
+
+            {/* ============ COMBOS DE AHORRO ============ */}
+            <div className="pt-2">
+              <h3 className="text-sm font-black text-slate-800 uppercase tracking-wider flex items-center gap-1.5">
+                🎁 Combos de Ahorro
+              </h3>
+              <p className="text-[10px] text-slate-500 font-bold uppercase mt-1 leading-normal font-sans">
+                Armá combos con precio especial: se muestran en la pestaña "Combos" de la tienda.
+              </p>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
+
+              {/* COMBO FORM (ADD/EDIT CARD) */}
+              <div className="bg-white p-6 rounded-2xl border border-slate-200/70 shadow-sm flex flex-col gap-4">
+                <div>
+                  <h4 className="font-extrabold text-xs text-slate-800 uppercase tracking-wider">
+                    {editingCombo ? '✏️ Editar Combo' : '➕ Nuevo Combo'}
+                  </h4>
+                  <p className="text-[11px] text-slate-500 leading-relaxed mt-1">
+                    El ahorro se calcula solo: precio normal menos precio del combo.
+                  </p>
+                </div>
+
+                <form onSubmit={handleSaveCombo} className="flex flex-col gap-3">
+                  <div>
+                    <label htmlFor="combo-name" className="text-[9.5px] font-bold text-slate-500 uppercase tracking-wide block mb-1">
+                      Nombre del Combo
+                    </label>
+                    <input
+                      id="combo-name"
+                      type="text"
+                      required
+                      value={comboNameInput}
+                      onChange={(e) => setComboNameInput(e.target.value)}
+                      placeholder="Ej: Combo Picada para 2"
+                      className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 focus:outline-hidden focus:ring-1 focus:ring-slate-400 focus:border-slate-400 text-xs font-bold"
+                    />
+                  </div>
+
+                  <div>
+                    <label htmlFor="combo-items" className="text-[9.5px] font-bold text-slate-500 uppercase tracking-wide block mb-1">
+                      ¿Qué incluye? (lo ve el cliente)
+                    </label>
+                    <textarea
+                      id="combo-items"
+                      required
+                      rows={2}
+                      value={comboItemsInput}
+                      onChange={(e) => setComboItemsInput(e.target.value)}
+                      placeholder="Ej: 1 Coca-Cola 2.25L + 2 Papas Lays + 1 Maní salado"
+                      className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 focus:outline-hidden focus:ring-1 focus:ring-slate-400 focus:border-slate-400 text-xs font-semibold resize-none"
+                    />
+                  </div>
+
+                  <div className="grid grid-cols-3 gap-3">
+                    <div>
+                      <label htmlFor="combo-label" className="text-[9.5px] font-bold text-slate-500 uppercase tracking-wide block mb-1">
+                        Etiqueta corta
+                      </label>
+                      <input
+                        id="combo-label"
+                        type="text"
+                        maxLength={8}
+                        value={comboLabelInput}
+                        onChange={(e) => setComboLabelInput(e.target.value)}
+                        placeholder="PICADA"
+                        className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 focus:outline-hidden focus:ring-1 focus:ring-slate-400 focus:border-slate-400 text-xs font-bold uppercase"
+                      />
+                    </div>
+                    <div>
+                      <label htmlFor="combo-price" className="text-[9.5px] font-bold text-slate-500 uppercase tracking-wide block mb-1">
+                        Precio Combo ($)
+                      </label>
+                      <input
+                        id="combo-price"
+                        type="number"
+                        required
+                        min="1"
+                        value={comboPriceInput}
+                        onChange={(e) => setComboPriceInput(e.target.value)}
+                        placeholder="9500"
+                        className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 focus:outline-hidden focus:ring-1 focus:ring-slate-400 focus:border-slate-400 text-xs font-bold text-blue-600 font-mono"
+                      />
+                    </div>
+                    <div>
+                      <label htmlFor="combo-orig" className="text-[9.5px] font-bold text-slate-500 uppercase tracking-wide block mb-1">
+                        Precio Normal ($)
+                      </label>
+                      <input
+                        id="combo-orig"
+                        type="number"
+                        required
+                        min="1"
+                        value={comboOrigInput}
+                        onChange={(e) => setComboOrigInput(e.target.value)}
+                        placeholder="12000"
+                        className="w-full px-3.5 py-2.5 rounded-xl border border-slate-200 focus:outline-hidden focus:ring-1 focus:ring-slate-400 focus:border-slate-400 text-xs font-bold font-mono"
+                      />
+                    </div>
+                  </div>
+
+                  {(() => {
+                    const cp = parseFloat(comboPriceInput);
+                    const co = parseFloat(comboOrigInput);
+                    if (!isNaN(cp) && !isNaN(co) && co > cp) {
+                      return (
+                        <p className="text-[10.5px] text-emerald-700 font-extrabold bg-emerald-50 border border-emerald-100 rounded-lg px-3 py-2">
+                          El cliente ahorra ${(co - cp).toLocaleString('es-AR')} 🎉
+                        </p>
+                      );
+                    }
+                    return null;
+                  })()}
+
+                  <div className="grid grid-cols-2 gap-2 mt-1">
+                    {editingCombo && (
+                      <button
+                        type="button"
+                        onClick={resetComboForm}
+                        className="py-2 px-3 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-xl text-xs font-bold transition-all active:scale-98 cursor-pointer"
+                      >
+                        Cancelar
+                      </button>
+                    )}
+                    <button
+                      type="submit"
+                      disabled={savingCombo}
+                      className={`py-2 px-3 text-white rounded-xl text-xs font-bold transition-all active:scale-98 cursor-pointer shadow-xs bg-blue-600 hover:bg-blue-700 ${editingCombo ? 'col-span-1' : 'col-span-2'}`}
+                    >
+                      {savingCombo ? 'Guardando...' : (editingCombo ? '💾 Guardar Cambios' : '➕ Crear Combo')}
+                    </button>
+                  </div>
+                </form>
+              </div>
+
+              {/* LIST OF COMBOS */}
+              <div className="bg-white p-6 rounded-2xl border border-slate-200/70 shadow-sm flex flex-col gap-4">
+                <div>
+                  <h4 className="font-extrabold text-xs text-slate-800 uppercase tracking-wider">
+                    Combos Cargados ({combos.length})
+                  </h4>
+                  <p className="text-[11px] text-slate-500 leading-relaxed mt-1">
+                    Podés pausar un combo para ocultarlo sin borrarlo (⏸️/▶️).
+                  </p>
+                </div>
+
+                <div className="space-y-2 max-h-[420px] overflow-y-auto pr-1 font-sans">
+                  {combos.map((combo) => (
+                    <div
+                      key={combo.id}
+                      className={`flex items-center justify-between gap-2 p-3.5 border rounded-xl shadow-3xs transition-all ${
+                        editingCombo?.id === combo.id
+                          ? 'bg-blue-50/70 border-blue-300'
+                          : combo.active === false
+                            ? 'bg-slate-100/70 border-slate-200 opacity-70'
+                            : 'bg-slate-50/50 border-slate-200 hover:bg-slate-50'
+                      }`}
+                    >
+                      <div className="min-w-0">
+                        <span className="text-xs font-black text-slate-800 block truncate">
+                          {combo.active === false && '⏸️ '}{combo.name}
+                        </span>
+                        <span className="text-[10px] text-slate-500 font-semibold block mt-0.5 truncate">
+                          {combo.items}
+                        </span>
+                        <span className="text-[9.5px] font-mono text-emerald-700 font-bold block mt-0.5">
+                          ${combo.price.toLocaleString('es-AR')} (antes ${combo.orig.toLocaleString('es-AR')} · ahorra ${combo.saving.toLocaleString('es-AR')})
+                        </span>
+                      </div>
+
+                      <div className="flex gap-1.5 shrink-0">
+                        <button
+                          type="button"
+                          onClick={() => handleToggleComboActive(combo)}
+                          className="p-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg border border-slate-200 transition-all cursor-pointer"
+                          title={combo.active === false ? 'Activar' : 'Pausar (ocultar de la tienda)'}
+                        >
+                          {combo.active === false ? '▶️' : '⏸️'}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleStartEditCombo(combo)}
+                          className="p-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg hover:text-blue-700 border border-slate-200 transition-all cursor-pointer"
+                          title="Editar"
+                        >
+                          ✏️
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleDeleteCombo(combo)}
+                          className="p-1.5 bg-slate-100 hover:bg-slate-200 text-slate-700 rounded-lg hover:text-red-700 border border-slate-200 transition-all cursor-pointer"
+                          title="Eliminar"
+                        >
+                          🗑️
+                        </button>
+                      </div>
+                    </div>
+                  ))}
+
+                  {combos.length === 0 && (
+                    <div className="text-center py-8 text-slate-400 font-bold text-xs">
+                      Todavía no hay combos. Creá el primero con el formulario. 🎁
                     </div>
                   )}
                 </div>
@@ -3805,23 +4196,19 @@ className="bg-slate-800 hover:bg-slate-700 text-sky-400 border border-slate-700/
                       <label className="block text-[10px] font-black text-slate-500 uppercase tracking-wider leading-none">
                         📷 Cargar Foto Propia (Desde tu cel o PC)
                       </label>
-                      <input 
-                        type="file" 
-                        accept="image/*" 
-                        onChange={(e) => {
-                          const file = e.target.files?.[0];
-                          if (file) {
-                            const reader = new FileReader();
-                            reader.onloadend = () => {
-                              if (typeof reader.result === 'string') {
-                                setFormImage(reader.result);
-                              }
-                            };
-                            reader.readAsDataURL(file);
-                          }
-                        }}
-                        className="text-[10.5px] text-slate-500 file:mr-2 file:py-1 file:px-2 file:rounded-md file:border-0 file:text-[10px] file:font-semibold file:bg-slate-200 file:text-slate-800 hover:file:bg-slate-300 cursor-pointer"
+                      <input
+                        type="file"
+                        accept="image/*"
+                        disabled={isUploadingPhoto}
+                        onChange={handleDevicePhotoSelected}
+                        className="text-[10.5px] text-slate-500 file:mr-2 file:py-1 file:px-2 file:rounded-md file:border-0 file:text-[10px] file:font-semibold file:bg-slate-200 file:text-slate-800 hover:file:bg-slate-300 cursor-pointer disabled:opacity-50 disabled:cursor-wait"
                       />
+                      {isUploadingPhoto && (
+                        <div className="flex items-center gap-2 text-[10.5px] text-blue-600 font-extrabold animate-pulse">
+                          <span className="w-3 h-3 border-2 border-blue-300 border-t-blue-600 rounded-full animate-spin inline-block"></span>
+                          Comprimiendo y subiendo la foto...
+                        </div>
+                      )}
                       {formImage && (
                         <div className="mt-1 flex items-center gap-2.5 p-1 bg-emerald-50 border border-emerald-100 rounded-lg">
                           <img 
@@ -4046,14 +4433,17 @@ className="bg-slate-800 hover:bg-slate-700 text-sky-400 border border-slate-700/
                   </h4>
                   
                   <div className="grid grid-cols-2 gap-2">
-                    {(['pendiente', 'confirmado', 'listo', 'entregado', 'cancelado'] as const).map(s => (
-                      <button 
+                    {((selectedOrder.delivery === 'envio'
+                      ? ['pendiente', 'confirmado', 'en_preparacion', 'en_camino', 'entregado', 'cancelado']
+                      : ['pendiente', 'confirmado', 'en_preparacion', 'listo', 'entregado', 'cancelado']) as Order['status'][]
+                    ).map(s => (
+                      <button
                         key={s}
                         onClick={() => {
                           if (!selectedOrder.docId) return;
                           onUpdateOrderStatus(selectedOrder.docId, s);
                           setSelectedOrder(prev => prev ? { ...prev, status: s } : null);
-                          showToast(`Pedido actualizado: ${s}`);
+                          showToast(`Pedido: ${orderStatusLabel(s, selectedOrder.delivery)}`);
                         }}
                         className={`py-2 px-3.5 rounded-lg text-[10px] font-black uppercase tracking-wider transition-all border cursor-pointer ${
                           selectedOrder.status === s 
@@ -4061,7 +4451,7 @@ className="bg-slate-800 hover:bg-slate-700 text-sky-400 border border-slate-700/
                             : 'bg-white hover:bg-slate-50 border-slate-200 text-slate-500'
                         }`}
                       >
-                        {s}
+                        {orderStatusLabel(s, selectedOrder.delivery)}
                       </button>
                     ))}
                   </div>

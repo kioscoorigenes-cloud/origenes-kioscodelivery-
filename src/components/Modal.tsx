@@ -75,7 +75,7 @@ export function Modal({
       const node = ref.current;
       if (!node) return;
 
-      const items = Array.from(node.querySelectorAll<HTMLElement>(FOCUSABLE))
+      const items: HTMLElement[] = (Array.from(node.querySelectorAll<HTMLElement>(FOCUSABLE)) as HTMLElement[])
         .filter(el => el.offsetWidth > 0 || el.offsetHeight > 0 || el === document.activeElement);
 
       if (items.length === 0) {

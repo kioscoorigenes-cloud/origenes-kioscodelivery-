@@ -640,17 +640,29 @@ async function startServer() {
           body: JSON.stringify({
             user_id: userId,
             secret: secret,
-            service: "diagnose"
+            service: "https://starpos.com/api"
           }),
           signal: controller.signal
         });
         clearTimeout(timeoutId);
 
         if (response.ok) {
-          success = true;
-          errorType = "NINGUNO";
-          logs.push(`✅ Conexión establecida de forma exitosa (HTTP ${response.status}).`);
-          infrastructureAdvice = "¡La conexión de red es correcta y las credenciales fueron aceptadas por el servidor de StarPOS!";
+          // No basta con un 2xx: la auth real exige payload.access_token. Así el
+          // diagnóstico refleja de verdad si las credenciales sirven (antes daba
+          // "conectado" con cualquier 200, aunque no autenticara).
+          let hasToken = false;
+          try { const body = await response.json(); hasToken = !!(body && body.payload && body.payload.access_token); } catch (e) { /* respuesta no-JSON */ }
+          if (hasToken) {
+            success = true;
+            errorType = "NINGUNO";
+            logs.push(`✅ Conexión y autenticación correctas (HTTP ${response.status}, token recibido).`);
+            infrastructureAdvice = "¡La conexión de red es correcta y las credenciales fueron aceptadas por StarPOS!";
+          } else {
+            errorType = "CREDENTIALS_OR_HTTP_ERROR";
+            details = `HTTP ${response.status} pero sin token de acceso en la respuesta.`;
+            logs.push(`⚠️ StarPOS respondió ${response.status} pero no devolvió token. Revisá STARPOS_USER_ID / STARPOS_SECRET.`);
+            infrastructureAdvice = "El servidor respondió pero no autenticó. Verificá que el usuario y el secret sean los correctos.";
+          }
         } else {
           errorType = "CREDENTIALS_OR_HTTP_ERROR";
           details = `Código de estado HTTP: ${response.status}`;

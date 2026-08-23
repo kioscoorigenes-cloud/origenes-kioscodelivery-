@@ -36,7 +36,7 @@ export interface Order {
   delivery: 'retiro' | 'envio';
   shipping: number;
   total: number;
-  status: 'pending_confirmation' | 'pendiente' | 'confirmado' | 'listo' | 'entregado' | 'cancelado';
+  status: 'pending_confirmation' | 'pendiente' | 'confirmado' | 'en_preparacion' | 'en_camino' | 'listo' | 'entregado' | 'cancelado';
   customerName?: string;
   customerPhone?: string;
   customerLocation?: string;
@@ -68,6 +68,8 @@ export interface Combo {
   price: number;
   orig: number;
   saving: number;
+  /** Si es false, el combo no se muestra en la tienda. */
+  active?: boolean;
 }
 
 export interface Promo {

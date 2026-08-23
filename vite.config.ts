@@ -34,7 +34,11 @@ export default defineConfig(() => {
               }
             },
             {
-              urlPattern: /.*/,
+              // Solo assets del MISMO origen (y no /api/*). Se excluye a propósito
+              // el stream de Firestore (firestore.googleapis.com, cross-origin):
+              // así el Service Worker no corta ni degrada el seguimiento en vivo
+              // (onSnapshot) ni cachea estados de pedido viejos.
+              urlPattern: ({ url }) => url.origin === self.location.origin && !url.pathname.startsWith('/api/'),
               handler: 'NetworkFirst',
               options: {
                 cacheName: 'general-runtime-cache',
