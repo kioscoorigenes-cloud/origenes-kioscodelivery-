@@ -20,7 +20,7 @@ service cloud.firestore {
     function isAdmin() {
       return isSignedIn() && (
         exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
-        ((request.auth.token.email == 'cam01back@gmail.com' || request.auth.token.email == 'juanpcolinagonzalez@gmail.com' || request.auth.token.email == 'kiosco.origenes@gmail.com') && request.auth.token.email_verified == true)
+        ((request.auth.token.email == 'cam01back@gmail.com' || request.auth.token.email == 'juanpcolinagonzalez@gmail.com' || request.auth.token.email == 'kiosco.origenes@gmail.com' || request.auth.token.email == 'olimpopiquet2019@gmail.com') && request.auth.token.email_verified == true)
       );
     }
 
@@ -28,7 +28,7 @@ service cloud.firestore {
       return isSignedIn() && (
         (exists(/databases/$(database)/documents/admins/$(request.auth.uid)) && 
          get(/databases/$(database)/documents/admins/$(request.auth.uid)).data.role == 'super') ||
-        ((request.auth.token.email == 'cam01back@gmail.com' || request.auth.token.email == 'juanpcolinagonzalez@gmail.com' || request.auth.token.email == 'kiosco.origenes@gmail.com') && request.auth.token.email_verified == true)
+        ((request.auth.token.email == 'cam01back@gmail.com' || request.auth.token.email == 'juanpcolinagonzalez@gmail.com' || request.auth.token.email == 'kiosco.origenes@gmail.com' || request.auth.token.email == 'olimpopiquet2019@gmail.com') && request.auth.token.email_verified == true)
       );
     }
 

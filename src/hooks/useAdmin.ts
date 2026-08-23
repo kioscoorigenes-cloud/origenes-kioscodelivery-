@@ -6,7 +6,8 @@ import { db } from '../firebase';
 export const BOOTSTRAP_ADMIN_EMAILS = [
   'cam01back@gmail.com',
   'juanpcolinagonzalez@gmail.com',
-  'kiosco.origenes@gmail.com'
+  'kiosco.origenes@gmail.com',
+  'olimpopiquet2019@gmail.com'
 ];
 
 export interface AdminRole {
@@ -72,7 +73,7 @@ export function useAdmin(currentUser: User | null | undefined): UseAdminResult {
 
     const docRef = doc(db, 'admins', currentUser.uid);
     const unsubscribe = onSnapshot(docRef, (docSnap) => {
-      const isBootstrapped = currentUser.emailVerified && BOOTSTRAP_ADMIN_EMAILS.includes(currentUser.email || '');
+      const isBootstrapped = currentUser.emailVerified && BOOTSTRAP_ADMIN_EMAILS.includes((currentUser.email || '').toLowerCase());
       
       if (docSnap.exists()) {
         const data = docSnap.data() as AdminRole;
@@ -89,7 +90,7 @@ export function useAdmin(currentUser: User | null | undefined): UseAdminResult {
     }, (error) => {
       console.warn("Error checking admin status:", error);
       // Fallback to bootstrap emails on error if necessary, to avoid lockout
-      const isBootstrapped = currentUser.emailVerified && BOOTSTRAP_ADMIN_EMAILS.includes(currentUser.email || '');
+      const isBootstrapped = currentUser.emailVerified && BOOTSTRAP_ADMIN_EMAILS.includes((currentUser.email || '').toLowerCase());
       setIsAdmin(isBootstrapped);
       setIsSuperAdmin(isBootstrapped);
       setAdminLoading(false);

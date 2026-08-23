@@ -9,7 +9,8 @@ import firebaseConfig from '../../firebase-applet-config.json';
 const BOOTSTRAP_ADMIN_EMAILS = [
   'cam01back@gmail.com',
   'juanpcolinagonzalez@gmail.com',
-  'kiosco.origenes@gmail.com'
+  'kiosco.origenes@gmail.com',
+  'olimpopiquet2019@gmail.com'
 ];
 
 function getAdminApp() {
