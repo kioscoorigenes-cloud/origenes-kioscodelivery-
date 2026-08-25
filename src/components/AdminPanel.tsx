@@ -9,8 +9,8 @@ import {
     Mail, Eye, EyeOff, ShieldCheck
 } from 'lucide-react';
 import { Product, Order, Category, PromoBanner, BillingConfig, DeliveryZone, Combo } from '../types';
-import { db, storage } from '../firebase';
-import { ref as storageFileRef, uploadBytes, getDownloadURL } from 'firebase/storage';
+import { db } from '../firebase';
+import { compressImageForUpload, uploadToSupabase, withTimeout } from '../utils/imageUpload';
 import { doc, getDoc, setDoc, collection, onSnapshot, deleteDoc } from 'firebase/firestore';
 import { auth } from '../firebase';
 import { BOOTSTRAP_ADMIN_EMAILS } from '../hooks/useAdmin';
@@ -29,31 +29,6 @@ interface TemplateProduct {
   price: number;
   desc: string;
   image: string;
-}
-
-/**
- * Comprime una foto del dispositivo antes de subirla: la reduce a un maximo de
- * 800px y la convierte a JPEG. Una foto de celular de ~4MB queda en ~100KB,
- * lo que hace que el catalogo cargue rapido y no infle la base de datos.
- */
-async function compressImageForUpload(file: File, maxDim = 800, quality = 0.82): Promise<Blob> {
-  const bitmap = await createImageBitmap(file);
-  try {
-    const scale = Math.min(1, maxDim / Math.max(bitmap.width, bitmap.height));
-    const w = Math.max(1, Math.round(bitmap.width * scale));
-    const h = Math.max(1, Math.round(bitmap.height * scale));
-    const canvas = document.createElement('canvas');
-    canvas.width = w;
-    canvas.height = h;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) throw new Error('Canvas 2D no disponible');
-    ctx.drawImage(bitmap, 0, 0, w, h);
-    const blob: Blob | null = await new Promise((res) => canvas.toBlob(res, 'image/jpeg', quality));
-    if (!blob) throw new Error('No se pudo comprimir la imagen');
-    return blob;
-  } finally {
-    bitmap.close();
-  }
 }
 
 const TEMPLATE_PRODUCTS: TemplateProduct[] = [
@@ -810,23 +785,18 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       try {
         blob = await compressImageForUpload(file);
       } catch (compressErr) {
-        console.error('No se pudo comprimir, uso el archivo original:', compressErr);
-        blob = file;
+        console.error('No se pudo procesar la imagen:', compressErr);
+        showToast('No pudimos procesar esa foto (formato no compatible). Probá con otra o sacale una captura 📸');
+        return;
       }
       try {
-        const path = `combos/${Date.now()}_${Math.random().toString(36).slice(2, 8)}.jpg`;
-        const fileRef = storageFileRef(storage, path);
-        await uploadBytes(fileRef, blob, {
-          contentType: blob.type || 'image/jpeg',
-          cacheControl: 'public, max-age=31536000',
-        });
-        const url = await getDownloadURL(fileRef);
+        const url = await withTimeout(uploadToSupabase(blob, 'combos'), 45000);
         setComboImageInput(url);
-        showToast('\ud83d\udcf7 \u00a1Foto subida con exito!');
+        showToast('📷 ¡Foto subida con exito!');
       } catch (uploadErr) {
-        console.error('Storage no disponible, uso fallback local:', uploadErr);
+        console.error('Supabase no disponible, uso fallback local:', uploadErr);
         if (blob.size > 700 * 1024) {
-          showToast('La foto es muy pesada y Storage no esta disponible \u274C');
+          showToast('La foto es muy pesada y el almacenamiento no responde ❌');
           return;
         }
         const dataUrl: string = await new Promise((res, rej) => {
@@ -836,7 +806,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           fr.readAsDataURL(blob);
         });
         setComboImageInput(dataUrl);
-        showToast('\ud83d\udcf7 Foto cargada (guardada dentro del combo)');
+        showToast('📷 Foto cargada (guardada dentro del combo)');
       }
     } finally {
       setIsUploadingComboPhoto(false);
@@ -1080,23 +1050,18 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       try {
         blob = await compressImageForUpload(file);
       } catch (compressErr) {
-        console.error('No se pudo comprimir, uso el archivo original:', compressErr);
-        blob = file;
+        console.error('No se pudo procesar la imagen:', compressErr);
+        showToast('No pudimos procesar esa foto (formato no compatible). Probá con otra o sacale una captura 📸');
+        return;
       }
       try {
-        const path = `products/${Date.now()}_${Math.random().toString(36).slice(2, 8)}.jpg`;
-        const fileRef = storageFileRef(storage, path);
-        await uploadBytes(fileRef, blob, {
-          contentType: blob.type || 'image/jpeg',
-          cacheControl: 'public, max-age=31536000',
-        });
-        const url = await getDownloadURL(fileRef);
+        const url = await withTimeout(uploadToSupabase(blob, 'products'), 45000);
         setFormImage(url);
-        showToast('\ud83d\udcf7 \u00a1Foto subida con exito!');
+        showToast('📷 ¡Foto subida con exito!');
       } catch (uploadErr) {
-        console.error('Storage no disponible, uso fallback local:', uploadErr);
+        console.error('Supabase no disponible, uso fallback local:', uploadErr);
         if (blob.size > 700 * 1024) {
-          showToast('La foto es muy pesada y Storage no esta disponible \u274C');
+          showToast('La foto es muy pesada y el almacenamiento no responde ❌');
           return;
         }
         const dataUrl: string = await new Promise((res, rej) => {
@@ -1106,7 +1071,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           fr.readAsDataURL(blob);
         });
         setFormImage(dataUrl);
-        showToast('\ud83d\udcf7 Foto cargada (guardada dentro del producto)');
+        showToast('📷 Foto cargada (guardada dentro del producto)');
       }
     } finally {
       setIsUploadingPhoto(false);
