@@ -510,7 +510,14 @@ export default function App() {
       }
     } catch (err) {
       setProducts(previousProductsList);
-      window.alert('No se pudo guardar el producto en la base de datos. Verificá los datos (nombre, precio, categoría) e intentá nuevamente.');
+      const e2 = err as any;
+      const motivo = e2?.code || e2?.message || String(err);
+      window.alert(
+        'No se pudo guardar el producto.\n\n' +
+        'Motivo real: ' + motivo + '\n' +
+        'Cuenta: ' + (auth.currentUser?.email || 'SIN SESION') + '\n' +
+        'Verificado: ' + (auth.currentUser?.emailVerified ? 'si' : 'NO')
+      );
       try { handleFirestoreError(err, OperationType.WRITE, `products/${resolvedProd.id}`); } catch (e) { console.error(e); }
     }
   };
@@ -548,7 +555,14 @@ export default function App() {
       }
     } catch (err) {
       setProducts(previousProductsListForAdd);
-      window.alert('No se pudo guardar el producto en la base de datos. Verificá los datos (nombre, precio, categoría) e intentá nuevamente.');
+      const e2 = err as any;
+      const motivo = e2?.code || e2?.message || String(err);
+      window.alert(
+        'No se pudo guardar el producto.\n\n' +
+        'Motivo real: ' + motivo + '\n' +
+        'Cuenta: ' + (auth.currentUser?.email || 'SIN SESION') + '\n' +
+        'Verificado: ' + (auth.currentUser?.emailVerified ? 'si' : 'NO')
+      );
       try { handleFirestoreError(err, OperationType.WRITE, `products/${nextId}`); } catch (e) { console.error(e); }
     }
   };
