@@ -15,11 +15,14 @@ export default defineConfig(() => {
         manifest: false, // we already have our own custom manifest.json in /public
         workbox: {
           globPatterns: ['**/*.{js,css,html,png,jpg,jpeg,gif,svg,ico,json,webmanifest}'],
-          // El panel admin se carga bajo demanda: precachearlo anulaba en ancho
-          // de banda la ventaja del React.lazy para el cliente de la tienda.
-          globIgnores: ['**/AdminPanel-*.js'],
+          // El chunk del admin TIENE que entrar al precache junto al index.html:
+          // si se excluye, tras cada deploy el index.html cacheado apunta a un hash
+          // de AdminPanel que ya no existe en el server, el 404 devuelve HTML y el
+          // import falla con 'Failed to load module script' (panel en blanco).
           // Techo por archivo, para que un chunk pesado no entre al precache.
           maximumFileSizeToCacheInBytes: 600 * 1024,
+          // Borra las cachés de builds viejos al activarse el SW nuevo.
+          cleanupOutdatedCaches: true,
           navigateFallback: '/index.html',
           runtimeCaching: [
             {
