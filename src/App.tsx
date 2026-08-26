@@ -42,6 +42,34 @@ const readLocalProducts = (): Product[] | null => {
   return null;
 };
 
+/**
+ * Normaliza el producto a EXACTAMENTE la forma que exige isValidProduct() en
+ * firestore.rules: tipos correctos, strings recortados a su maximo y sin campos
+ * opcionales vacios. Sin esto, un campo mal tipado hace que la regla rechace la
+ * escritura entera con permission-denied.
+ */
+function sanitizeProductForWrite(p: any) {
+  const str = (v: any, max: number) => (typeof v === 'string' ? v : (v == null ? '' : String(v))).slice(0, max);
+  const nameClean = str(p.name, 200);
+  const clean: Record<string, any> = {
+    id: Number(p.id),
+    name: nameClean,
+    name_lower: nameClean.trim().toLowerCase(),
+    brand: str(p.brand, 100),
+    price: Number(p.price),
+    orig: (p.orig == null || isNaN(Number(p.orig))) ? null : Number(p.orig),
+    cat: str(p.cat, 50),
+    desc: str(p.desc, 2000),
+    inStock: Boolean(p.inStock),
+    image: (p.image == null ? null : String(p.image)),
+  };
+  if (p.featured != null) clean.featured = Boolean(p.featured);
+  if (p.neww != null) clean.neww = Boolean(p.neww);
+  if (p.codigoFacturador != null && String(p.codigoFacturador).trim() !== '')
+    clean.codigoFacturador = String(p.codigoFacturador).slice(0, 100);
+  return clean;
+}
+
 export default function App() {
   const [view, setView] = useState<'storefront' | 'admin'>(() => {
     const params = new URLSearchParams(window.location.search);
@@ -506,7 +534,8 @@ export default function App() {
 
     try {
       if (isAdminUser) {
-        await setDoc(doc(db, 'products', resolvedProd.id.toString()), resolvedProd);
+        const payload = sanitizeProductForWrite(resolvedProd);
+        await setDoc(doc(db, 'products', String(payload.id)), payload);
       }
     } catch (err) {
       setProducts(previousProductsList);
@@ -516,7 +545,8 @@ export default function App() {
         'No se pudo guardar el producto.\n\n' +
         'Motivo real: ' + motivo + '\n' +
         'Cuenta: ' + (auth.currentUser?.email || 'SIN SESION') + '\n' +
-        'Verificado: ' + (auth.currentUser?.emailVerified ? 'si' : 'NO')
+        'Verificado: ' + (auth.currentUser?.emailVerified ? 'si' : 'NO') +
+        '\nDatos: ' + JSON.stringify(sanitizeProductForWrite(resolvedProd))
       );
       try { handleFirestoreError(err, OperationType.WRITE, `products/${resolvedProd.id}`); } catch (e) { console.error(e); }
     }
@@ -551,7 +581,8 @@ export default function App() {
 
     try {
       if (isAdminUser) {
-        await setDoc(doc(db, 'products', nextId.toString()), nextProd);
+        const payload = sanitizeProductForWrite(nextProd);
+        await setDoc(doc(db, 'products', String(payload.id)), payload);
       }
     } catch (err) {
       setProducts(previousProductsListForAdd);
@@ -561,7 +592,8 @@ export default function App() {
         'No se pudo guardar el producto.\n\n' +
         'Motivo real: ' + motivo + '\n' +
         'Cuenta: ' + (auth.currentUser?.email || 'SIN SESION') + '\n' +
-        'Verificado: ' + (auth.currentUser?.emailVerified ? 'si' : 'NO')
+        'Verificado: ' + (auth.currentUser?.emailVerified ? 'si' : 'NO') +
+        '\nDatos: ' + JSON.stringify(sanitizeProductForWrite(nextProd))
       );
       try { handleFirestoreError(err, OperationType.WRITE, `products/${nextId}`); } catch (e) { console.error(e); }
     }
