@@ -2998,7 +2998,7 @@ const compressImage = (dataUrl: string, maxDim: number = 1024, quality: number =
                     <img 
                       src={selectedProduct.image} 
                       alt={selectedProduct.name} 
-                      className="w-full h-full object-cover animate-fade-in" 
+                      className="w-full h-full object-contain bg-white animate-fade-in" 
                       referrerPolicy="no-referrer"
                       onError={(e) => {
                         e.currentTarget.onerror = null;

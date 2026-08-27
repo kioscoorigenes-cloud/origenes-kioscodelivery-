@@ -44,6 +44,10 @@ async function encodeJpeg(src: DrawableImage, maxDim: number, quality: number): 
   canvas.width = w; canvas.height = h;
   const ctx = canvas.getContext('2d');
   if (!ctx) throw new Error('Canvas 2D no disponible');
+  // JPEG no tiene canal alfa: sin este relleno, las zonas transparentes del
+  // PNG/WebP original se aplanan a NEGRO al exportar.
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect(0, 0, w, h);
   src.draw(ctx, w, h);
   const blob: Blob | null = await new Promise((res) => canvas.toBlob(res, 'image/jpeg', quality));
   if (!blob) throw new Error('No se pudo comprimir la imagen');
