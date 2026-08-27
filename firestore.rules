@@ -18,17 +18,17 @@ service cloud.firestore {
     }
 
     function isAdmin() {
-      return isSignedIn() && (
+      return request.auth != null && (
         exists(/databases/$(database)/documents/admins/$(request.auth.uid)) ||
-        ((request.auth.token.email == 'cam01back@gmail.com' || request.auth.token.email == 'juanpcolinagonzalez@gmail.com' || request.auth.token.email == 'kiosco.origenes@gmail.com' || request.auth.token.email == 'olimpopiquet2019@gmail.com') && request.auth.token.email_verified == true)
+        request.auth.token.email in ['cam01back@gmail.com','juanpcolinagonzalez@gmail.com','kiosco.origenes@gmail.com','olimpopiquet2019@gmail.com']
       );
     }
 
     function isSuperAdmin() {
-      return isSignedIn() && (
-        (exists(/databases/$(database)/documents/admins/$(request.auth.uid)) && 
+      return request.auth != null && (
+        (exists(/databases/$(database)/documents/admins/$(request.auth.uid)) &&
          get(/databases/$(database)/documents/admins/$(request.auth.uid)).data.role == 'super') ||
-        ((request.auth.token.email == 'cam01back@gmail.com' || request.auth.token.email == 'juanpcolinagonzalez@gmail.com' || request.auth.token.email == 'kiosco.origenes@gmail.com' || request.auth.token.email == 'olimpopiquet2019@gmail.com') && request.auth.token.email_verified == true)
+        request.auth.token.email in ['cam01back@gmail.com','juanpcolinagonzalez@gmail.com','kiosco.origenes@gmail.com','olimpopiquet2019@gmail.com']
       );
     }
 
@@ -45,13 +45,13 @@ service cloud.firestore {
              p.name_lower is string && p.name_lower.size() > 0 && p.name_lower.size() <= 200 &&
              p.brand is string && p.brand.size() <= 100 &&
              p.price is number && p.price >= 0 &&
-             (p.orig == null || p.orig is number) &&
+             (p.get('orig', null) == null || p.orig is number) &&
              p.cat is string && p.cat.size() <= 50 &&
              p.desc is string && p.desc.size() <= 2000 &&
              p.inStock is bool &&
-             (p.featured == null || p.featured is bool) &&
-             (p.neww == null || p.neww is bool) &&
-             (p.image == null || p.image is string);
+             (p.get('featured', false) is bool) &&
+             (p.get('neww', false) is bool) &&
+             (p.get('image', null) == null || p.image is string);
     }
 
      // Whitelist of the only fields an order document may ever contain.
