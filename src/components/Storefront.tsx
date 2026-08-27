@@ -2992,7 +2992,7 @@ const compressImage = (dataUrl: string, maxDim: number = 1024, quality: number =
                 {/* Image Placeholder */}
                 <div 
                   style={{ backgroundColor: CAT_BG[selectedProduct.cat] || '#f1f5f9' }}
-                  className="h-32 w-full rounded-xl flex flex-col items-center justify-center relative font-black text-white overflow-hidden shadow-inner"
+                  className="h-72 w-full rounded-xl flex flex-col items-center justify-center relative font-black text-white overflow-hidden shadow-inner"
                 >
                   {selectedProduct.image ? (
                     <img 
