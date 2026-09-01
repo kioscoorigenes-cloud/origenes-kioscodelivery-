@@ -11,7 +11,7 @@ import {
 import { Product, Order, Category, PromoBanner, BillingConfig, DeliveryZone, Combo } from '../types';
 import { db } from '../firebase';
 import { compressImageForUpload, uploadToSupabase, withTimeout } from '../utils/imageUpload';
-import { doc, getDoc, setDoc, collection, onSnapshot, deleteDoc } from 'firebase/firestore';
+import { doc, getDoc, setDoc, collection, onSnapshot, deleteDoc, query, where, orderBy, limit, getDocs } from 'firebase/firestore';
 import { auth } from '../firebase';
 import { BOOTSTRAP_ADMIN_EMAILS } from '../hooks/useAdmin';
 import { signInWithEmailAndPassword, sendPasswordResetEmail } from 'firebase/auth';
@@ -220,6 +220,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     }
   }, [productCatFilter, onDbCategoryChange]);
   const [productSearch, setProductSearch] = useState<string>('');
+  // Resultados de la busqueda contra Firestore: la lista del panel esta paginada,
+  // asi que filtrar en memoria solo alcanzaba lo ya descargado.
+  const [serverSearchResults, setServerSearchResults] = useState<Product[]>([]);
+  const [isSearchingProducts, setIsSearchingProducts] = useState<boolean>(false);
 
   // Modals / forms drawer
   const [editingProduct, setEditingProduct] = useState<Product | null>(null);
@@ -1000,6 +1004,50 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       return matchCat && hay;
     });
   }, [products, productCatFilter, productSearch]);
+
+  // Busqueda server-side por prefijo de name_lower (mismo patron que Storefront).
+  // Con 300ms de debounce para no disparar una query por tecla.
+  useEffect(() => {
+    const term = productSearch.trim().toLowerCase();
+    if (!term) {
+      setServerSearchResults([]);
+      setIsSearchingProducts(false);
+      return;
+    }
+
+    let cancelado = false;
+    setIsSearchingProducts(true);
+
+    const t = setTimeout(async () => {
+      try {
+        const baseCol = collection(db, 'products');
+        const q = productCatFilter !== 'all'
+          ? query(baseCol, where('cat', '==', productCatFilter), where('name_lower', '>=', term), where('name_lower', '<=', term + ''), orderBy('name_lower'), limit(40))
+          : query(baseCol, where('name_lower', '>=', term), where('name_lower', '<=', term + ''), orderBy('name_lower'), limit(40));
+        const snap = await getDocs(q);
+        if (cancelado) return;
+        const results: Product[] = [];
+        snap.forEach(d => results.push(d.data() as Product));
+        setServerSearchResults(results);
+      } catch (err) {
+        // Si falla (falta el indice compuesto, sin red), queda el filtro en memoria.
+        console.warn('Busqueda server-side no disponible, uso el filtro local:', err);
+        if (!cancelado) setServerSearchResults([]);
+      } finally {
+        if (!cancelado) setIsSearchingProducts(false);
+      }
+    }, 300);
+
+    return () => { cancelado = true; clearTimeout(t); };
+  }, [productSearch, productCatFilter]);
+
+  // Lo que se muestra en la gondola: con texto, los resultados de Firestore
+  // (y si no trajo nada, el filtro en memoria como respaldo). Sin texto, la
+  // lista paginada normal.
+  const gondolaProducts = useMemo(() => {
+    if (!productSearch.trim()) return getFilteredProducts;
+    return serverSearchResults.length > 0 ? serverSearchResults : getFilteredProducts;
+  }, [productSearch, serverSearchResults, getFilteredProducts]);
 
   // Toggle in stock / out of stock instantly from list view
   const quickToggleStock = (p: Product) => {
@@ -2466,11 +2514,14 @@ className="bg-slate-800 hover:bg-slate-700 text-sky-400 border border-slate-700/
                     </span>
                     <input 
                       type="text"
-                      placeholder="Filtrar por nombre o marca..."
+                      placeholder="Buscar en todo el catálogo por nombre..."
                       value={productSearch}
                       onChange={(e) => setProductSearch(e.target.value)}
                       className="w-full bg-white border border-slate-200 rounded-xl py-2 pl-9 pr-4 text-xs font-semibold focus:outline-none focus:ring-1 focus:ring-slate-400"
                     />
+                    {isSearchingProducts && (
+                      <span className="absolute inset-y-0 right-3 flex items-center text-[10px] font-bold text-blue-600">Buscando…</span>
+                    )}
                   </div>
 
                   <button 
@@ -2670,7 +2721,7 @@ className="bg-slate-800 hover:bg-slate-700 text-sky-400 border border-slate-700/
 
                 {/* List products and edit stock controls */}
                 <div className="bg-white rounded-xl border border-slate-200 shadow-sm divide-y divide-slate-100 overflow-hidden">
-                  {getFilteredProducts.map(p => (
+                  {gondolaProducts.map(p => (
                     <div key={p.id} className="p-3 flex items-center gap-3">
                       
                       {/* Category thumbnail or actual product image */}
@@ -2759,7 +2810,7 @@ className="bg-slate-800 hover:bg-slate-700 text-sky-400 border border-slate-700/
                     </div>
                   ))}
 
-                  {productsStatus === 'loading' && getFilteredProducts.length === 0 && Array.from({ length: 6 }).map((_, idx) => (
+                  {productsStatus === 'loading' && gondolaProducts.length === 0 && Array.from({ length: 6 }).map((_, idx) => (
                     <div key={`admin-skeleton-${idx}`} className="flex items-center gap-4 p-4 border border-slate-100 rounded-2xl animate-pulse">
                       <div className="w-14 h-14 bg-slate-100 rounded-xl shrink-0" />
                       <div className="flex-1 space-y-2 py-1">
@@ -2775,7 +2826,7 @@ className="bg-slate-800 hover:bg-slate-700 text-sky-400 border border-slate-700/
                     </div>
                   )}
 
-                  {hasMore && productsStatus !== 'loadingMore' && productsStatus !== 'loading' && (
+                  {hasMore && !productSearch.trim() && productsStatus !== 'loadingMore' && productsStatus !== 'loading' && (
                     <div className="p-4 flex justify-center">
                       <button 
                         type="button"
@@ -2787,7 +2838,7 @@ className="bg-slate-800 hover:bg-slate-700 text-sky-400 border border-slate-700/
                     </div>
                   )}
 
-                  {getFilteredProducts.length === 0 && productsStatus !== 'loading' && (
+                  {gondolaProducts.length === 0 && productsStatus !== 'loading' && !isSearchingProducts && (
                     <div className="py-12 text-center text-slate-400">
                       <p className="font-extrabold text-xs">No se encontraron productos registrados.</p>
                     </div>
