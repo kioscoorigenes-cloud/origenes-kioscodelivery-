@@ -2509,18 +2509,18 @@ className="bg-slate-800 hover:bg-slate-700 text-sky-400 border border-slate-700/
                 {/* Search and operational actions */}
                 <div className="flex gap-2">
                   <div className="relative flex-1">
-                    <span className="absolute inset-y-0 left-3 flex items-center text-slate-400">
-                      <Search size={14} />
+                    <span className="absolute inset-y-0 left-3.5 flex items-center text-slate-500">
+                      <Search size={22} strokeWidth={2.5} />
                     </span>
-                    <input 
+                    <input
                       type="text"
                       placeholder="Buscar en todo el catálogo por nombre..."
                       value={productSearch}
                       onChange={(e) => setProductSearch(e.target.value)}
-                      className="w-full bg-white border border-slate-200 rounded-xl py-2 pl-9 pr-4 text-xs font-semibold focus:outline-none focus:ring-1 focus:ring-slate-400"
+                      className="w-full bg-white border-2 border-slate-200 rounded-2xl py-3.5 pl-12 pr-4 text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-slate-400 focus:border-slate-400"
                     />
                     {isSearchingProducts && (
-                      <span className="absolute inset-y-0 right-3 flex items-center text-[10px] font-bold text-blue-600">Buscando…</span>
+                      <span className="absolute inset-y-0 right-4 flex items-center text-xs font-bold text-blue-600">Buscando…</span>
                     )}
                   </div>
 
