@@ -2525,46 +2525,6 @@ className="bg-slate-800 hover:bg-slate-700 text-sky-400 border border-slate-700/
                   </div>
 
                   <button 
-                    onClick={triggerCsvExport}
-                    title="Exportar CSV de Productos"
-                    className="bg-blue-100 hover:bg-blue-200 text-blue-700 hover:text-blue-800 py-2 px-3 rounded-xl flex items-center gap-1.5 shadow-sm text-[11px] font-extrabold select-none shrink-0"
-                  >
-                    <Download size={13} />
-                    <span>Exportar</span>
-                  </button>
-
-                  <button 
-                    onClick={() => {
-                      setCsvParsedList([]);
-                      setCsvErrorsList([]);
-                      setShowingCsvImport(true);
-                    }}
-                    title="Importar CSV de Productos"
-                    className="bg-blue-100 hover:bg-blue-200 text-blue-700 hover:text-blue-800 py-2 px-3 rounded-xl flex items-center gap-1.5 shadow-sm text-[11px] font-extrabold select-none shrink-0"
-                  >
-                    <Upload size={13} />
-                    <span>Importar</span>
-                  </button>
-
-                  <button 
-                    onClick={handleBulkGenerateImages}
-                    disabled={isBulkGeneratingImages}
-                    title="Completar todas las imágenes faltantes con IA"
-                    className={`py-2 px-3 rounded-xl flex items-center gap-1.5 shadow-sm relative transition-all text-[11px] font-extrabold select-none shrink-0 ${
-                      isBulkGeneratingImages 
-                        ? 'bg-rose-50 text-rose-500 cursor-wait border border-rose-200' 
-                        : 'bg-rose-100 hover:bg-rose-200 text-rose-700 hover:text-rose-800'
-                    }`}
-                  >
-                    {isBulkGeneratingImages ? (
-                      <span className="w-3 h-3 border-2 border-rose-400 border-t-rose-600 rounded-full animate-spin inline-block"></span>
-                    ) : (
-                      <Sparkles size={13} className="text-blue-600 fill-blue-200 shrink-0" />
-                    )}
-                    <span>Completar IA</span>
-                  </button>
-
-                  <button 
                     onClick={() => {
                       resetFormState();
                       setShowingAddForm(true);
