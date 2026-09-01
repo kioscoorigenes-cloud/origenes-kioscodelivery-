@@ -990,11 +990,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
   // Filtered products list
   const getFilteredProducts = useMemo(() => {
+    const q = productSearch.trim().toLowerCase();
     return products.filter(p => {
       const matchCat = productCatFilter === 'all' || p.cat === productCatFilter;
-      const matchSearch = p.name.toLowerCase().includes(productSearch.toLowerCase()) || 
-                          p.brand.toLowerCase().includes(productSearch.toLowerCase());
-      return matchCat && matchSearch;
+      if (!q) return matchCat;
+      const hay = [p.name, p.brand, p.cat, p.codigoFacturador]
+        .filter(Boolean)
+        .some(v => String(v).toLowerCase().includes(q));
+      return matchCat && hay;
     });
   }, [products, productCatFilter, productSearch]);
 
