@@ -22,6 +22,32 @@
     <title>Orígenes Kiosco | Pedidos Va</title>
     <link rel="manifest" href="/manifest.json" />
     <link rel="icon" type="image/png" href="/icon-192.png" />
+    <!-- GEO / SEO: datos estructurados del negocio para buscadores y motores de IA. -->
+    <script type="application/ld+json">
+    {
+      "@context":"https://schema.org",
+      "@type":"GroceryStore",
+      "name":"Orígenes del Fuego",
+      "image":"https://origenes-kioscodelivery-production.up.railway.app/logo.png",
+      "url":"https://origenes-kioscodelivery-production.up.railway.app",
+      "telephone":"+5492901601296",
+      "email":"kiosco.origenes@gmail.com",
+      "priceRange":"$$",
+      "address":{"@type":"PostalAddress","streetAddress":"Bahía Ushuaia 3120","addressLocality":"Ushuaia","addressRegion":"Tierra del Fuego","postalCode":"9410","addressCountry":"AR"},
+      "areaServed":{"@type":"City","name":"Ushuaia"},
+      "openingHours":"Mo-Su 08:00-00:00",
+      "sameAs":["https://www.instagram.com/origenes.kiosco"]
+    }
+    </script>
+
+    <script type="application/ld+json">
+    {"@context":"https://schema.org","@type":"FAQPage","mainEntity":[
+    {"@type":"Question","name":"¿Hacen envíos a domicilio?","acceptedAnswer":{"@type":"Answer","text":"Sí, hacemos delivery en toda Ushuaia. Se pide desde la tienda online o por WhatsApp y se recibe en el domicilio."}},
+    {"@type":"Question","name":"¿Tienen tienda online?","acceptedAnswer":{"@type":"Answer","text":"Sí, se compra desde el celular y se elige envío a domicilio o retiro en el local."}},
+    {"@type":"Question","name":"¿Qué medios de pago aceptan?","acceptedAnswer":{"@type":"Answer","text":"Todos: efectivo, débito, crédito y pagos con QR / Mercado Pago."}},
+    {"@type":"Question","name":"¿Cuál es el horario?","acceptedAnswer":{"@type":"Answer","text":"Todos los días de 8 a 24 h."}}
+    ]}
+    </script>
   </head>
   <body>
     <div id="root"></div>
