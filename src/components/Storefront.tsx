@@ -501,6 +501,8 @@ export const Storefront: React.FC<StorefrontProps> = ({
   const [cardExpiry, setCardExpiry] = useState<string>('');
   const [cardCvv, setCardCvv] = useState<string>('');
   const [bankReceiptChecked, setBankReceiptChecked] = useState<boolean>(false);
+  // Consentimiento de terminos: se exige antes de enviar el pedido.
+  const [aceptaTerminos, setAceptaTerminos] = useState<boolean>(false);
   const [cashAmountPaidWith, setCashAmountPaidWith] = useState<string>('');
   const [showOrderSummaryScreen, setShowOrderSummaryScreen] = useState<boolean>(false);
   
@@ -1428,6 +1430,7 @@ const compressImage = (dataUrl: string, maxDim: number = 1024, quality: number =
       setCouponInput('');
       setPaymentMethod('tarjeta_online');
       setBankReceiptChecked(false);
+      setAceptaTerminos(false);
       setCashAmountPaidWith('');
       setShowCheckoutModal(false);
       setShowOrderSummaryScreen(false);
@@ -2955,6 +2958,27 @@ const compressImage = (dataUrl: string, maxDim: number = 1024, quality: number =
           )}
 
         </AnimatePresence>
+
+        {/* Pie con los datos del comercio y las paginas legales. Va dentro del
+            <main> con scroll: el nav inferior es fixed y lo taparia. */}
+        <footer className="border-t border-slate-200 bg-white mt-8 py-6 px-4 text-center text-xs text-slate-500">
+          <p className="font-extrabold text-slate-700 mb-1">Orígenes Kiosco &amp; Delivery</p>
+          <p>Bahía Ushuaia 3120, Ushuaia, Tierra del Fuego, Argentina</p>
+          <p className="mb-3">
+            <a href="mailto:kiosco.origenes@gmail.com" className="text-blue-600 font-bold">
+              kiosco.origenes@gmail.com
+            </a>
+          </p>
+          <nav aria-label="Páginas legales" className="flex flex-wrap justify-center items-center gap-x-2.5 gap-y-1.5">
+            <a href="/terminosycondiciones.html" target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline font-semibold">Términos y Condiciones</a>
+            <span aria-hidden="true" className="text-slate-300">|</span>
+            <a href="/privacidad.html" target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline font-semibold">Privacidad</a>
+            <span aria-hidden="true" className="text-slate-300">|</span>
+            <a href="/reembolsos.html" target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline font-semibold">Reembolsos</a>
+            <span aria-hidden="true" className="text-slate-300">|</span>
+            <a href="/eliminacion.html" target="_blank" rel="noopener noreferrer" className="text-blue-600 hover:underline font-semibold">Eliminar Datos</a>
+          </nav>
+        </footer>
       </main>
 
       {/* CORE MODAL FOR OUT-OF-STOCK PRODUCT AND SIMILAR SUGGESTIONS */}
@@ -4226,6 +4250,28 @@ const compressImage = (dataUrl: string, maxDim: number = 1024, quality: number =
                   </div>
                 )}
 
+                {/* Consentimiento: solo en el paso final, antes de enviar el pedido. */}
+                {showOrderSummaryScreen && (
+                  <label className="flex items-start gap-2.5 text-xs text-slate-600 cursor-pointer pt-3 leading-snug">
+                    <input
+                      type="checkbox"
+                      checked={aceptaTerminos}
+                      onChange={(e) => setAceptaTerminos(e.target.checked)}
+                      className="mt-0.5 w-4 h-4 accent-blue-600 shrink-0 cursor-pointer"
+                    />
+                    <span>
+                      Acepto los{' '}
+                      <a href="/terminosycondiciones.html" target="_blank" rel="noopener noreferrer" className="text-blue-600 font-bold underline">
+                        Términos y Condiciones
+                      </a>
+                      {' '}y la{' '}
+                      <a href="/privacidad.html" target="_blank" rel="noopener noreferrer" className="text-blue-600 font-bold underline">
+                        Política de Privacidad
+                      </a>
+                    </span>
+                  </label>
+                )}
+
                 <div className="flex gap-2.5 w-full pt-3">
                   <button 
                     id="btn-checkout-back"
@@ -4243,7 +4289,8 @@ const compressImage = (dataUrl: string, maxDim: number = 1024, quality: number =
                   <button 
                     id="btn-checkout-submit"
                     onClick={submitOrder}
-                    className="flex-1 bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-xl text-xs font-extrabold shadow shadow-blue-200 transition-all font-sans animate-pulse cursor-pointer"
+                    disabled={showOrderSummaryScreen && !aceptaTerminos}
+                    className="flex-1 bg-blue-600 hover:bg-blue-700 text-white py-3 rounded-xl text-xs font-extrabold shadow shadow-blue-200 transition-all font-sans animate-pulse cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed disabled:animate-none disabled:hover:bg-blue-600"
                   >
                     {showOrderSummaryScreen ? 'Confirmar y Enviar Pedido' : 'Siguiente 👉'}
                   </button>
