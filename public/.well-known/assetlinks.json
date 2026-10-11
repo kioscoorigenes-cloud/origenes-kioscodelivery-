@@ -1,0 +1,12 @@
+[
+  {
+    "relation": ["delegate_permission/common.handle_all_urls"],
+    "target": {
+      "namespace": "android_app",
+      "package_name": "app.railway.up.origenes_kioscodelivery_production.twa",
+      "sha256_cert_fingerprints": [
+        "C7:C3:3A:04:CF:36:30:82:1C:2D:E6:D4:C2:AD:29:C8:EC:93:73:3E:A9:55:9D:26:21:9A:88:3A:D5:BB:FF:21"
+      ]
+    }
+  }
+]
