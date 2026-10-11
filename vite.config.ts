@@ -20,7 +20,7 @@ export default defineConfig(() => {
           // de AdminPanel que ya no existe en el server, el 404 devuelve HTML y el
           // import falla con 'Failed to load module script' (panel en blanco).
           // Techo por archivo, para que un chunk pesado no entre al precache.
-          maximumFileSizeToCacheInBytes: 600 * 1024,
+          maximumFileSizeToCacheInBytes: 900 * 1024,
           // Borra las cachés de builds viejos al activarse el SW nuevo.
           cleanupOutdatedCaches: true,
           navigateFallback: '/index.html',

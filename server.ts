@@ -15,6 +15,9 @@ import {
 } from "./src/services/starpos";
 import { requireAdmin, getAdminFirestore } from "./src/services/serverAuth";
 import rateLimit from "express-rate-limit";
+import helmet from "helmet";
+import cors from "cors";
+import compression from "compression";
 
 
 // Initialize Firebase App SDK
@@ -101,15 +104,78 @@ async function startServer() {
   // Railway / Render / Fly inyectan el puerto por entorno; 3000 en local.
   const PORT = Number(process.env.PORT) || 3000;
 
+  // Seguridad y performance
+  const SUPABASE_ORIGIN = 'https://gajoyervuzjgmtepmbxe.supabase.co';
+
+  app.use(helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'", 'https://apis.google.com', 'https://accounts.google.com'],
+        styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
+        fontSrc: ["'self'", 'https://fonts.gstatic.com', 'data:'],
+        // Supabase sirve las fotos del catalogo: sin su origen no se ven.
+        imgSrc: ["'self'", 'data:', 'blob:', SUPABASE_ORIGIN, 'https://images.unsplash.com', 'https://firebasestorage.googleapis.com', 'https://lh3.googleusercontent.com'],
+        // Supabase (subida de fotos) + Firebase Auth/Firestore.
+        connectSrc: ["'self'", SUPABASE_ORIGIN, 'https://*.googleapis.com', 'https://*.firebaseio.com', 'https://securetoken.googleapis.com', 'https://identitytoolkit.googleapis.com'],
+        // El login de Google abre un iframe de accounts.google.com.
+        frameSrc: ["'self'", 'https://accounts.google.com', 'https://*.firebaseapp.com'],
+        workerSrc: ["'self'", 'blob:'],
+      },
+    },
+    // 'same-origin' (default de helmet) rompe signInWithPopup de Google.
+    crossOriginOpenerPolicy: { policy: 'same-origin-allow-popups' },
+    // Las fotos vienen de Supabase: COEP estricto las bloquearia.
+    crossOriginEmbedderPolicy: false,
+  }));
+
+  // CORS: la SPA se sirve del mismo origen; solo se permite el dominio propio.
+  const allowedOrigins = [
+    process.env.APP_URL || 'https://origenes-kioscodelivery-production.up.railway.app',
+    'http://localhost:3000',
+  ].filter(Boolean);
+  // Solo sobre /api/*: los assets estaticos no necesitan CORS, y aplicarlo
+  // globalmente hacia que cualquier Origin no listado recibiera un 500 en
+  // TODO el sitio (CSS, JS, index), no solo en la API.
+  app.use('/api/', cors({
+    origin: (origin, callback) => {
+      // Sin origin = same-origin, curl o la app nativa.
+      if (!origin || allowedOrigins.includes(origin)) return callback(null, true);
+      // false, no throw: se niegan los headers CORS y el navegador bloquea,
+      // en vez de devolver un 500 del servidor.
+      return callback(null, false);
+    },
+    credentials: true,
+  }));
+
+  app.use(compression());
+
+  // Techo global por IP sobre /api/*; los limitadores por ruta siguen vigentes.
+  app.use('/api/', rateLimit({
+    windowMs: 60 * 1000,
+    limit: 100,
+    standardHeaders: 'draft-7',
+    legacyHeaders: false,
+    message: { error: 'Demasiadas solicitudes. Intentá de nuevo en un minuto.' },
+  }));
+
   // Middleware to parse JSON
-  app.use(express.json({ limit: '10mb' }));
+  app.use(express.json({ limit: '1mb' }));
 
   // API Route for AI Image Generation
   app.post("/api/ai/generate-product-image", requireAdmin, async (req, res) => {
-    const { productName, productBrand } = req.body;
+    let { productName, productBrand } = req.body;
     if (!productName) {
       return res.status(400).json({ error: "Product name is required" });
     }
+
+    // El texto entra en el prompt del modelo. Allowlist: solo letras, numeros,
+    // espacio y puntuacion inocua. Asi caen comillas, backticks, barras y saltos
+    // de linea, que son los que permiten reescribir la instruccion.
+    const sanitizePrompt = (v: any) =>
+      String(v).replace(/[^p{L}p{N} .,%&()+-]/gu, '').slice(0, 100).trim();
+    productName = sanitizePrompt(productName);
+    productBrand = productBrand ? sanitizePrompt(productBrand) : 'Kiosco';
 
     try {
       const ai = getGenAI();
@@ -936,7 +1002,9 @@ async function startServer() {
     app.use(vite.middlewares);
   } else {
     const distPath = path.join(process.cwd(), 'dist');
-    app.use(express.static(distPath));
+    // dotfiles 'allow': sin esto /.well-known/assetlinks.json da 404 y falla
+    // la verificacion del TWA en Google Play.
+    app.use(express.static(distPath, { dotfiles: 'allow' }));
     app.get('*', (req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });
