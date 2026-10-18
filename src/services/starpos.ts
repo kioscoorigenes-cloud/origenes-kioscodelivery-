@@ -211,11 +211,29 @@ export async function getStarPOSConfig() {
 }
 
 /**
+ * Helper: parse JSON safely from a Response, throwing a clear error if the
+ * body is not valid JSON (e.g. "upstream error" from a reverse proxy).
+ */
+async function safeJsonParse<T = unknown>(response: Response, context: string): Promise<T> {
+  const text = await response.text();
+  try {
+    return JSON.parse(text) as T;
+  } catch {
+    // Mostrar los primeros 200 chars del cuerpo para diagnóstico
+    const preview = text.length > 200 ? text.slice(0, 200) + '…' : text;
+    throw new Error(
+      `Respuesta no-JSON de StarPOS en ${context}: "${preview}" (HTTP ${response.status}). ` +
+      'Esto suele significar que el túnel (Tailscale/ngrok) está caído o que StarPOS devolvió un error de texto.'
+    );
+  }
+}
+
+/**
  * 1) AUTENTICACIÓN: POST to authentication endpoint and cache token
  */
 export async function authenticateStarPOS(forceRefresh = false): Promise<string> {
   const config = await getStarPOSConfig();
-  
+
   if (!config.userId || !config.secret || !config.serviceUrl) {
     throw new Error("Missing StarPOS credentials or URL. Configure STARPOS_USER_ID, STARPOS_SECRET, and STARPOS_SERVICE_URL.");
   }
@@ -227,8 +245,6 @@ export async function authenticateStarPOS(forceRefresh = false): Promise<string>
 
   const authUrl = `${config.serviceUrl.replace(/\/$/, '')}/v1/Authenticate`;
 
-  // Timeout: si StarPOS (local/túnel) queda a medias en el handshake, no se
-  // cuelga la sincronización indefinidamente.
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), 10000);
   try {
@@ -248,25 +264,26 @@ export async function authenticateStarPOS(forceRefresh = false): Promise<string>
       throw new Error(`Authentication failed with status ${response.status}`);
     }
 
-    const data = await response.json();
-    if (data && data.payload && data.payload.access_token) {
-      cachedToken = data.payload.access_token; // fix: read token from payload.access_token per StarPOS API contract
-      // Expire in 1 hour
+    const data = await safeJsonParse<Record<string, unknown>>(response, '/v1/Authenticate');
+    const payload = data?.payload as Record<string, unknown> | undefined;
+    if (payload?.access_token && typeof payload.access_token === 'string') {
+      cachedToken = payload.access_token;
       tokenExpiry = Date.now() + 3600 * 1000;
       return cachedToken;
     } else {
       throw new Error("Respuesta de autenticación inválida de StarPOS: falta 'payload.access_token'.");
     }
-  } catch (error: any) {
+  } catch (error: unknown) {
     clearTimeout(timeoutId);
-    const msg = error.name === 'AbortError' ? 'timeout (StarPOS no respondió en 10s)' : error.message;
+    const err = error instanceof Error ? error : new Error(String(error));
+    const msg = err.name === 'AbortError' ? 'timeout (StarPOS no respondió en 10s)' : err.message;
     console.error(`StarPOS Auth Error at ${authUrl}:`, msg);
     throw new Error(`Error de autenticación StarPOS: ${msg}`);
   }
 }
 
 /**
- * Safe fetch helper using cached token
+ * Safe fetch helper using cached token, with automatic retry on 401/403.
  */
 async function authenticatedFetch(endpoint: string, options: RequestInit = {}): Promise<Response> {
   const config = await getStarPOSConfig();
@@ -291,7 +308,6 @@ async function authenticatedFetch(endpoint: string, options: RequestInit = {}): 
   };
 
   let res = await doFetch(await authenticateStarPOS());
-  // Si el token venció o es inválido, se refresca UNA vez y se reintenta.
   if (res.status === 401 || res.status === 403) {
     res = await doFetch(await authenticateStarPOS(true));
   }
@@ -304,7 +320,7 @@ async function authenticatedFetch(endpoint: string, options: RequestInit = {}): 
 function toSlug(str: string): string {
   return str.toLowerCase()
     .normalize('NFD')
-    .replace(/[\u0300-\u036f]/g, '')
+    .replace(/[̀-ͯ]/g, '')
     .replace(/[^a-z0-9]+/g, '_')
     .replace(/^_+|_+$/g, '');
 }
@@ -347,8 +363,7 @@ export async function syncCatalogToStarPOS(products: Product[]): Promise<SyncRep
 
   try {
     report.logs.push("Iniciando sincronización obligatoria de catálogo...");
-    
-    // Ensure we are authenticated
+
     await authenticateStarPOS();
     report.logs.push("🔑 Autenticación con StarPOS exitosa.");
 
@@ -363,7 +378,10 @@ export async function syncCatalogToStarPOS(products: Product[]): Promise<SyncRep
       method: 'POST',
       body: JSON.stringify(taxes)
     });
-    if (!taxesRes.ok) throw new Error(`Fallo al crear impuestos (Status: ${taxesRes.status})`);
+    if (!taxesRes.ok) {
+      const body = await taxesRes.text().catch(() => '');
+      throw new Error(`Fallo al crear impuestos (Status: ${taxesRes.status}): ${body.slice(0, 200)}`);
+    }
     report.steps.taxes = true;
     report.logs.push("✅ Impuestos creados con éxito.");
 
@@ -376,7 +394,10 @@ export async function syncCatalogToStarPOS(products: Product[]): Promise<SyncRep
       method: 'POST',
       body: JSON.stringify(priceLists)
     });
-    if (!priceListRes.ok) throw new Error(`Fallo al crear listas de precios (Status: ${priceListRes.status})`);
+    if (!priceListRes.ok) {
+      const body = await priceListRes.text().catch(() => '');
+      throw new Error(`Fallo al crear listas de precios (Status: ${priceListRes.status}): ${body.slice(0, 200)}`);
+    }
     report.steps.priceList = true;
     report.logs.push("✅ Lista de precios creada con éxito.");
 
@@ -391,7 +412,10 @@ export async function syncCatalogToStarPOS(products: Product[]): Promise<SyncRep
       method: 'POST',
       body: JSON.stringify(categories)
     });
-    if (!catRes.ok) throw new Error(`Fallo al crear categorías (Status: ${catRes.status})`);
+    if (!catRes.ok) {
+      const body = await catRes.text().catch(() => '');
+      throw new Error(`Fallo al crear categorías (Status: ${catRes.status}): ${body.slice(0, 200)}`);
+    }
     report.steps.categories = true;
     report.logs.push(`✅ ${categories.length} Categorías creadas con éxito.`);
 
@@ -406,7 +430,10 @@ export async function syncCatalogToStarPOS(products: Product[]): Promise<SyncRep
       method: 'POST',
       body: JSON.stringify(families)
     });
-    if (!famRes.ok) throw new Error(`Fallo al crear familias (Status: ${famRes.status})`);
+    if (!famRes.ok) {
+      const body = await famRes.text().catch(() => '');
+      throw new Error(`Fallo al crear familias (Status: ${famRes.status}): ${body.slice(0, 200)}`);
+    }
     report.steps.families = true;
     report.logs.push("✅ Familias de categorías creadas con éxito.");
 
@@ -421,7 +448,10 @@ export async function syncCatalogToStarPOS(products: Product[]): Promise<SyncRep
       method: 'POST',
       body: JSON.stringify(brands)
     });
-    if (!brandRes.ok) throw new Error(`Fallo al crear marcas (Status: ${brandRes.status})`);
+    if (!brandRes.ok) {
+      const body = await brandRes.text().catch(() => '');
+      throw new Error(`Fallo al crear marcas (Status: ${brandRes.status}): ${body.slice(0, 200)}`);
+    }
     report.steps.brands = true;
     report.logs.push(`✅ ${brands.length} Marcas creadas con éxito.`);
 
@@ -451,14 +481,11 @@ export async function syncCatalogToStarPOS(products: Product[]): Promise<SyncRep
         products_branches: [
           'branch_principal'
         ],
-        // Precio base = lista. Si hay descuento real (orig > price), el base es
-        // orig y la OFERTA activa es el precio promocional (más bajo). Antes la
-        // oferta usaba orig (el más alto) y podía anular la promo en el POS.
         products_prices: [
-          { price_list_id: 'price_list_general', price_sell: (p.orig && p.orig > p.price) ? p.orig : p.price, last_modification: new Date().toISOString().slice(0,10) }
+          { price_list_id: 'price_list_general', price_sell: (p.orig && p.orig > p.price) ? p.orig : p.price, last_modification: new Date().toISOString().slice(0, 10) }
         ],
         products_price_offers: (p.orig && p.orig > p.price) ? [
-          { id: `offer_${pId}`, price_list_id: 'price_list_general', price_sell: p.price, active: true, date_begin: new Date().toISOString().slice(0,10), last_modification: new Date().toISOString().slice(0,10) }
+          { id: `offer_${pId}`, price_list_id: 'price_list_general', price_sell: p.price, active: true, date_begin: new Date().toISOString().slice(0, 10), last_modification: new Date().toISOString().slice(0, 10) }
         ] : [],
         products_sales_by_qty: []
       };
@@ -468,7 +495,10 @@ export async function syncCatalogToStarPOS(products: Product[]): Promise<SyncRep
       method: 'POST',
       body: JSON.stringify(starPOSProducts)
     });
-    if (!prodRes.ok) { const errBody = await prodRes.text().catch(() => ''); throw new Error(`Fallo al crear catálogo de productos (Status: ${prodRes.status}): ${errBody.slice(0, 300)}`); }
+    if (!prodRes.ok) {
+      const errBody = await prodRes.text().catch(() => '');
+      throw new Error(`Fallo al crear catálogo de productos (Status: ${prodRes.status}): ${errBody.slice(0, 300)}`);
+    }
     report.steps.products = true;
     report.syncedCount = starPOSProducts.length;
     report.logs.push(`✅ ${starPOSProducts.length} productos con sub-colecciones enviados con éxito.`);
@@ -484,7 +514,10 @@ export async function syncCatalogToStarPOS(products: Product[]): Promise<SyncRep
       method: 'POST',
       body: JSON.stringify(paymentMethods)
     });
-    if (!payRes.ok) throw new Error(`Fallo al crear métodos de pago (Status: ${payRes.status})`);
+    if (!payRes.ok) {
+      const body = await payRes.text().catch(() => '');
+      throw new Error(`Fallo al crear métodos de pago (Status: ${payRes.status}): ${body.slice(0, 200)}`);
+    }
     report.steps.paymentMethods = true;
     report.logs.push("✅ Métodos de pago registrados.");
 
@@ -498,15 +531,19 @@ export async function syncCatalogToStarPOS(products: Product[]): Promise<SyncRep
       method: 'POST',
       body: JSON.stringify(plans)
     });
-    if (!planRes.ok) throw new Error(`Fallo al registrar planes (Status: ${planRes.status})`);
+    if (!planRes.ok) {
+      const body = await planRes.text().catch(() => '');
+      throw new Error(`Fallo al registrar planes (Status: ${planRes.status}): ${body.slice(0, 200)}`);
+    }
     report.steps.plans = true;
     report.logs.push("✅ Planes de financiación sincronizados.");
 
     report.success = true;
     report.logs.push("🎉 ¡La sincronización obligatoria del catálogo en StarPOS se completó con éxito absoluto!");
-  } catch (error: any) {
+  } catch (error: unknown) {
     report.success = false;
-    report.logs.push(`❌ Sincronización fallida: ${error.message}`);
+    const msg = error instanceof Error ? error.message : String(error);
+    report.logs.push(`❌ Sincronización fallida: ${msg}`);
     console.error("StarPOS Catalog Sync Error:", error);
   }
 
@@ -529,8 +566,10 @@ export async function getStarPOSTickets(): Promise<StarPOSTicket[]> {
   if (!response.ok) {
     throw new Error(`Failed to fetch tickets: Status ${response.status}`);
   }
-  const data = await response.json();
-    return Array.isArray(data) ? data : (data?.Tickets || data?.tickets || data?.data || data?.items || []);
+  const data = await safeJsonParse<Record<string, unknown>>(response, '/v1/Tickets');
+  if (Array.isArray(data)) return data;
+  const d = data as Record<string, unknown>;
+  return (d?.Tickets || d?.tickets || d?.data || d?.items || []) as StarPOSTicket[];
 }
 
 export async function getStarPOSClosedCash(): Promise<StarPOSClosedCash[]> {
@@ -538,8 +577,10 @@ export async function getStarPOSClosedCash(): Promise<StarPOSClosedCash[]> {
   if (!response.ok) {
     throw new Error(`Failed to fetch closed cash: Status ${response.status}`);
   }
-  const data2 = await response.json();
-    return Array.isArray(data2) ? data2 : (data2?.ClosedCash || data2?.closedCash || data2?.data || data2?.items || []);
+  const data = await safeJsonParse<Record<string, unknown>>(response, '/v1/ClosedCash');
+  if (Array.isArray(data)) return data;
+  const d = data as Record<string, unknown>;
+  return (d?.ClosedCash || d?.closedCash || d?.data || d?.items || []) as StarPOSClosedCash[];
 }
 
 /**
@@ -557,8 +598,7 @@ export async function syncSalesAndDiscountStock(firestoreProducts: Product[]): P
 
   try {
     result.logs.push("Iniciando importación de ventas de StarPOS...");
-    
-    // Authenticate
+
     await authenticateStarPOS();
     result.logs.push("🔑 Conectado con la API de StarPOS.");
 
@@ -575,21 +615,25 @@ export async function syncSalesAndDiscountStock(firestoreProducts: Product[]): P
 
     // Fetch synced state from firestore to prevent double discounting
     const adminDb = getAdminDb();
-        const stateRef = doc(db, 'settings', 'starpos_sync_state');
-            const stateSnap = adminDb ? await adminDb.collection('settings').doc('starpos_sync_state').get() : await getDoc(stateRef);
-    const stateExists = adminDb ? (stateSnap as any).exists : (stateSnap as any).exists();
-        const stateData: any = stateExists ? stateSnap.data() : null;
-            const processedTicketIds = new Set<string>(
-                  (stateData && stateData.processedTicketIds) || []
-                      );
+    const stateRef = doc(db, 'settings', 'starpos_sync_state');
+    const stateSnap = adminDb
+      ? await adminDb.collection('settings').doc('starpos_sync_state').get()
+      : await getDoc(stateRef);
+    const stateExists = adminDb
+      ? (stateSnap as FirebaseFirestore.DocumentSnapshot).exists
+      : (stateSnap as import('firebase/firestore').DocumentSnapshot).exists();
+    const stateData = stateExists ? (stateSnap.data() as Record<string, unknown> | undefined) : null;
+    const processedTicketIds = new Set<string>(
+      (stateData?.processedTicketIds as string[]) || []
+    );
 
     result.logs.push(`Se omitirán ${processedTicketIds.size} tickets previamente procesados.`);
 
     // Read all products from Firestore to keep current context
     const productsSnap = await getDocs(collection(db, 'products'));
     const currentProducts: Product[] = [];
-    productsSnap.forEach(doc => {
-      currentProducts.push({ ...(doc.data() as Product) });
+    productsSnap.forEach(docSnap => {
+      currentProducts.push({ ...(docSnap.data() as Product) });
     });
 
     const newProcessedTicketIds: string[] = Array.from(processedTicketIds);
@@ -597,7 +641,6 @@ export async function syncSalesAndDiscountStock(firestoreProducts: Product[]): P
 
     for (const ticket of tickets) {
       // Validación defensiva: si el ticket no tiene la forma esperada, se saltea
-      // y se loguea, en vez de romper todo el loop (que dispararía el reproceso).
       if (!ticket || typeof ticket.id === 'undefined' || !Array.isArray(ticket.ticket_lines)) {
         result.logs.push(`   ⚠️ Ticket con forma inválida, se omite.`);
         continue;
@@ -607,7 +650,6 @@ export async function syncSalesAndDiscountStock(firestoreProducts: Product[]): P
       }
 
       result.logs.push(`Procesando ticket nro: ${ticket.ticket_number} (ID: ${ticket.id}). Total: $${ticket.total}`);
-        const adminDb = getAdminDb();
 
       // Loop over ticket lines
       for (const line of ticket.ticket_lines) {
@@ -620,9 +662,7 @@ export async function syncSalesAndDiscountStock(firestoreProducts: Product[]): P
         );
 
         if (matchedProduct) {
-          // Solo se descuenta si conocemos el stock REAL del producto. Antes se
-          // inventaba una base de 15 unidades, escribiendo inventario ficticio.
-          const knownStock = (matchedProduct as any).stockQty;
+          const knownStock = (matchedProduct as Record<string, unknown>).stockQty;
           if (typeof knownStock !== 'number') {
             result.logs.push(`   ⚠️ "${matchedProduct.name}": stock desconocido, no se descuenta (cargá el stock real primero).`);
             continue;
@@ -644,13 +684,12 @@ export async function syncSalesAndDiscountStock(firestoreProducts: Product[]): P
               inStock: nextInStock,
             });
           }
-          // Log the reduction
           result.stockReductions.push({
             productName: matchedProduct.name,
             sku: matchedProduct.codigoFacturador || matchedProduct.id.toString(),
             qty: line.units
           });
-          
+
           stockUpdatedCount++;
           result.logs.push(`   -> Descontado "${matchedProduct.name}" x${line.units}. Nuevo stock: ${nextStock}`);
         } else {
@@ -660,24 +699,22 @@ export async function syncSalesAndDiscountStock(firestoreProducts: Product[]): P
 
       // Add to processed list
       newProcessedTicketIds.push(ticket.id);
-      
+
       // Save ticket inside a subcollection for audit visibility
       if (adminDb) {
-              await adminDb.collection('starpos_imported_sales').doc(ticket.id).set({ ...ticket, importedAt: new Date().toISOString() });
-                  } else {
-                        await setDoc(doc(db, 'starpos_imported_sales', ticket.id), { ...ticket, importedAt: new Date().toISOString() });
-                            }
-      
-      // Persistir el estado tras CADA ticket procesado: si un ticket posterior
-      // falla, los ya descontados quedan registrados y no se reprocesan (esto es
-      // lo que evita el doble descuento de stock).
+        await adminDb.collection('starpos_imported_sales').doc(ticket.id).set({ ...ticket, importedAt: new Date().toISOString() });
+      } else {
+        await setDoc(doc(db, 'starpos_imported_sales', ticket.id), { ...ticket, importedAt: new Date().toISOString() });
+      }
+
+      // Persistir el estado tras CADA ticket procesado para evitar doble descuento
       try {
         if (adminDb) {
           await adminDb.collection('settings').doc('starpos_sync_state').set({ processedTicketIds: newProcessedTicketIds, lastSyncTime: new Date().toISOString() });
         } else {
           await setDoc(stateRef, { processedTicketIds: newProcessedTicketIds, lastSyncTime: new Date().toISOString() });
         }
-      } catch (e) { /* se reintenta en la próxima corrida */ }
+      } catch { /* se reintenta en la próxima corrida */ }
 
       // Mark as transmitted in StarPOS API
       try {
@@ -686,28 +723,30 @@ export async function syncSalesAndDiscountStock(firestoreProducts: Product[]): P
           body: JSON.stringify({ id: ticket.id, ticket_id: ticket.id, ticketId: ticket.id })
         });
         result.logs.push(`   -> Confirmado y marcado como transmitido en la API de StarPOS.`);
-      } catch (err: any) {
-        result.logs.push(`   ⚠️ Error al marcar ticket ${ticket.ticket_number} como transmitido: ${err.message}`);
+      } catch (err: unknown) {
+        const msg = err instanceof Error ? err.message : String(err);
+        result.logs.push(`   ⚠️ Error al marcar ticket ${ticket.ticket_number} como transmitido: ${msg}`);
       }
     }
 
     // Save final synchronized list
-        if (adminDb) {
-              await adminDb.collection('settings').doc('starpos_sync_state').set({ processedTicketIds: newProcessedTicketIds, lastSyncTime: new Date().toISOString() });
-                  } else {
-                        await setDoc(stateRef, { processedTicketIds: newProcessedTicketIds, lastSyncTime: new Date().toISOString() });
-                            }
+    if (adminDb) {
+      await adminDb.collection('settings').doc('starpos_sync_state').set({ processedTicketIds: newProcessedTicketIds, lastSyncTime: new Date().toISOString() });
+    } else {
+      await setDoc(stateRef, { processedTicketIds: newProcessedTicketIds, lastSyncTime: new Date().toISOString() });
+    }
 
-                                result.success = true;
-                                    result.logs.push(`🎉 Importación finalizada. Se procesaron ${newProcessedTicketIds.length - processedTicketIds.size} tickets nuevos y se redujo stock de ${stockUpdatedCount} artículos.`);
-                                      } catch (error: any) {
-                                          result.success = false;
-                                              result.logs.push(`❌ Error en sincronización de ventas y stock: ${error.message}`);
-                                                  console.error("syncSalesAndDiscountStock Error:", error);
-                                                    }
+    result.success = true;
+    result.logs.push(`🎉 Importación finalizada. Se procesaron ${newProcessedTicketIds.length - processedTicketIds.size} tickets nuevos y se redujo stock de ${stockUpdatedCount} artículos.`);
+  } catch (error: unknown) {
+    result.success = false;
+    const msg = error instanceof Error ? error.message : String(error);
+    result.logs.push(`❌ Error en sincronización de ventas y stock: ${msg}`);
+    console.error("syncSalesAndDiscountStock Error:", error);
+  }
 
-                                                      return result;
-                                                      }
+  return result;
+}
 
 export interface SyncStockResult {
   success: boolean;
@@ -716,8 +755,12 @@ export interface SyncStockResult {
 }
 
 /**
- * 4) SINCRONIZACIÓN DIRECTA DE STOCK (GET /v1/CurrentStock)
- * Maps current stock quantities back into our Firestore database products.
+ * 4) SINCRONIZACIÓN DE STOCK VÍA TICKETS
+ *
+ * NOTA: /v1/CurrentStock NO existe en la API oficial de StarPOS v1.3.
+ * El stock se mantiene descontando desde los tickets (syncSalesAndDiscountStock).
+ * Esta función se conserva por si el endpoint existe en una versión custom,
+ * pero ahora falla con un mensaje claro en vez de explotar.
  */
 export async function syncStockFromStarPOS(): Promise<SyncStockResult> {
   const result: SyncStockResult = {
@@ -725,79 +768,89 @@ export async function syncStockFromStarPOS(): Promise<SyncStockResult> {
     syncedCount: 0,
     logs: []
   };
-    const adminDb = getAdminDb();
+  const adminDb = getAdminDb();
 
   try {
-    result.logs.push("Iniciando sincronización directa de stock desde StarPOS (/v1/CurrentStock)...");
+    result.logs.push("Iniciando sincronización directa de stock desde StarPOS...");
     await authenticateStarPOS();
     result.logs.push("🔑 Conexión exitosa con la API de StarPOS.");
 
+    // Intentar /v1/CurrentStock — puede no existir en la API oficial
     result.logs.push("Consultando /v1/CurrentStock...");
     const response = await authenticatedFetch('/v1/CurrentStock');
+
     if (!response.ok) {
+      // Si devuelve 404, el endpoint no existe — sugerir usar sync-sales
+      if (response.status === 404) {
+        result.logs.push("⚠️ El endpoint /v1/CurrentStock no existe en esta versión de StarPOS.");
+        result.logs.push("💡 Usá 'Sincronizar Ventas' en su lugar: importa los tickets y descuenta el stock automáticamente.");
+        result.success = false;
+        return result;
+      }
       throw new Error(`Fallo al consultar stock actual (Status: ${response.status})`);
     }
 
-    const currentStockData = await response.json();
-    
-const stockArray = Array.isArray(currentStockData) ? currentStockData : (currentStockData && Array.isArray(currentStockData.payload) ? currentStockData.payload : null);
-if (!Array.isArray(stockArray)) {
-throw new Error("El endpoint /v1/CurrentStock no retornó un array válido de stock.");
-}
+    const currentStockData = await safeJsonParse<unknown>(response, '/v1/CurrentStock');
 
-result.logs.push(`Recuperados ${stockArray.length} registros de stock de StarPOS.`);
+    const stockArray = Array.isArray(currentStockData)
+      ? currentStockData
+      : (currentStockData && typeof currentStockData === 'object' && Array.isArray((currentStockData as Record<string, unknown>).payload))
+        ? (currentStockData as Record<string, unknown>).payload as unknown[]
+        : null;
 
-// Read all products from Firestore to keep current context
-const productsSnap = await getDocs(collection(db, 'products'));
-const currentProducts: Product[] = [];
-productsSnap.forEach(docObj => {
-currentProducts.push({ ...(docObj.data() as Product) });
-});
+    if (!Array.isArray(stockArray)) {
+      throw new Error("El endpoint /v1/CurrentStock no retornó un array válido de stock.");
+    }
 
-let updatedCount = 0;
+    result.logs.push(`Recuperados ${stockArray.length} registros de stock de StarPOS.`);
 
-for (const stockItem of stockArray) {
-// Robust mapping of ID or codes (StarPOS wraps product data inside stockItem.product)
-const itemId = stockItem.product?.id || stockItem.product?.code || stockItem.product_id || stockItem.id || stockItem.code;
-// Robust extraction of stock value (StarPOS uses "units" for CurrentStock)
-const qty = typeof stockItem.units !== 'undefined'
-? stockItem.units
-: (typeof stockItem.qty !== 'undefined'
-? stockItem.qty
-: (typeof stockItem.stock !== 'undefined'
-? stockItem.stock
-: (typeof stockItem.stockQty !== 'undefined' ? stockItem.stockQty : null)));
+    // Read all products from Firestore
+    const productsSnap = await getDocs(collection(db, 'products'));
+    const currentProducts: Product[] = [];
+    productsSnap.forEach(docObj => {
+      currentProducts.push({ ...(docObj.data() as Product) });
+    });
+
+    let updatedCount = 0;
+
+    for (const stockItem of stockArray) {
+      if (!stockItem || typeof stockItem !== 'object') continue;
+      const si = stockItem as Record<string, unknown>;
+      const product = si.product as Record<string, unknown> | undefined;
+
+      const itemId = product?.id || product?.code || si.product_id || si.id || si.code;
+      const qty = typeof si.units === 'number' ? si.units
+        : typeof si.qty === 'number' ? si.qty
+        : typeof si.stock === 'number' ? si.stock
+        : typeof si.stockQty === 'number' ? si.stockQty
+        : null;
 
       if (!itemId || qty === null) continue;
 
-      const matchedProduct = currentProducts.find(p => 
-        p.id.toString() === itemId.toString() || 
-        p.codigoFacturador === itemId.toString()
+      const matchedProduct = currentProducts.find(p =>
+        p.id.toString() === String(itemId) ||
+        p.codigoFacturador === String(itemId)
       );
 
       if (matchedProduct) {
         const nextStock = Math.max(0, Number(qty));
         const nextInStock = nextStock > 0;
 
-            const productRef = doc(db, 'products', matchedProduct.id.toString());
-                if (adminDb) {
-                      await adminDb.collection('products').doc(matchedProduct.id.toString()).update({
-                              stockQty: nextStock,
-                                      inStock: nextInStock,
-                                            });
-                                                } else {
-                                                      await updateDoc(productRef, {
-                                                              stockQty: nextStock,
-                                                                      inStock: nextInStock,
-                                                                            });
-                                                                                }
+        if (adminDb) {
+          await adminDb.collection('products').doc(matchedProduct.id.toString()).update({
+            stockQty: nextStock,
+            inStock: nextInStock,
+          });
+        } else {
+          const productRef = doc(db, 'products', matchedProduct.id.toString());
+          await updateDoc(productRef, {
+            stockQty: nextStock,
+            inStock: nextInStock,
+          });
+        }
         updatedCount++;
         result.logs.push(`   -> "${matchedProduct.name}" stock actualizado de forma directa a: ${nextStock}`);
       } else {
-        // Seguridad: NO se auto-crea el producto. Antes se creaba con precio
-        // posible $0 y categoría 'sin-categoria', lo que con un mapeo de IDs
-        // incorrecto podía llenar el catálogo de basura vendible. El operador
-        // decide qué productos existen; acá solo se avisa.
         result.logs.push(`   ⚠️ Ítem de stock sin producto en la tienda (código ${itemId}): se omite, no se crea automáticamente.`);
       }
     }
@@ -805,9 +858,10 @@ const qty = typeof stockItem.units !== 'undefined'
     result.syncedCount = updatedCount;
     result.success = true;
     result.logs.push(`🎉 Sincronización de stock finalizada con éxito. Se actualizaron ${updatedCount} artículos.`);
-  } catch (error: any) {
+  } catch (error: unknown) {
     result.success = false;
-    result.logs.push(`❌ Error en sincronización directa de stock: ${error.message}`);
+    const msg = error instanceof Error ? error.message : String(error);
+    result.logs.push(`❌ Error en sincronización directa de stock: ${msg}`);
     console.error("syncStockFromStarPOS Error:", error);
   }
 

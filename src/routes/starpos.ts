@@ -40,7 +40,6 @@ export function starposRoutes({ firestoreDb }: { firestoreDb: Firestore }): Rout
     }
 
     try {
-      // Try to authenticate with StarPOS API
       const token = await authenticateStarPOS(true);
       return res.json({
         configured: true,
@@ -53,11 +52,12 @@ export function starposRoutes({ firestoreDb }: { firestoreDb: Firestore }): Rout
         },
         token: token.slice(0, 8) + "..."
       });
-    } catch (err: any) {
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
       return res.json({
         configured: true,
         status: "ERROR_CONEXION",
-        message: `No se pudo conectar al local físico (${config.serviceUrl}): ${err.message}. La tienda entrará en modo resiliente de contingencia.`,
+        message: `No se pudo conectar al local físico (${config.serviceUrl}): ${msg}. La tienda entrará en modo resiliente de contingencia.`,
         config: {
           userId: config.userId,
           serviceUrl: config.serviceUrl,
@@ -95,21 +95,18 @@ export function starposRoutes({ firestoreDb }: { firestoreDb: Firestore }): Rout
     let details = "";
 
     try {
-      // Step 1: Parse Host and Port
       const urlParsed = new URL(serviceUrl);
       const host = urlParsed.hostname;
       const port = urlParsed.port || (urlParsed.protocol === 'https:' ? '443' : '80');
       logs.push(`DNS & Red: Extrayendo Hostname [${host}] y Puerto [${port}]`);
 
-      // Check if port is 8090 or standard
       if (port !== '8090') {
         logs.push(`⚠️ Nota: El puerto configurado es [${port}]. El estándar de la integración física de StarPOS suele ser 8090.`);
       }
 
-      // Step 2: Attempt standard fetch with a tight 4-second timeout to distinguish timeouts
       const controller = new AbortController();
       const timeoutId = setTimeout(() => controller.abort(), 4000);
-    
+
       const authUrl = `${serviceUrl.replace(/\/$/, '')}/v1/Authenticate`;
       logs.push(`Conectando con endpoint de autenticación: ${authUrl}`);
 
@@ -127,11 +124,13 @@ export function starposRoutes({ firestoreDb }: { firestoreDb: Firestore }): Rout
         clearTimeout(timeoutId);
 
         if (response.ok) {
-          // No basta con un 2xx: la auth real exige payload.access_token. Así el
-          // diagnóstico refleja de verdad si las credenciales sirven (antes daba
-          // "conectado" con cualquier 200, aunque no autenticara).
           let hasToken = false;
-          try { const body = await response.json(); hasToken = !!(body && body.payload && body.payload.access_token); } catch (e) { /* respuesta no-JSON */ }
+          try {
+            const body = await response.json();
+            hasToken = !!(body && body.payload && body.payload.access_token);
+          } catch {
+            /* respuesta no-JSON */
+          }
           if (hasToken) {
             success = true;
             errorType = "NINGUNO";
@@ -149,32 +148,34 @@ export function starposRoutes({ firestoreDb }: { firestoreDb: Firestore }): Rout
           logs.push(`❌ El servidor remoto de StarPOS respondió con un error HTTP ${response.status}.`);
           infrastructureAdvice = "El servidor de StarPOS físico está respondiendo, pero rechazó la autenticación. Verifique que STARPOS_USER_ID y STARPOS_SECRET sean correctos y coincidan con los de la terminal física.";
         }
-      } catch (innerErr: any) {
+      } catch (innerErr: unknown) {
         clearTimeout(timeoutId);
-        details = innerErr.message || String(innerErr);
-      
-        if (innerErr.name === 'AbortError' || innerErr.message?.toLowerCase().includes('timeout')) {
+        const ie = innerErr instanceof Error ? innerErr : new Error(String(innerErr));
+        details = ie.message;
+
+        if (ie.name === 'AbortError' || ie.message?.toLowerCase().includes('timeout')) {
           errorType = "TIMEOUT";
           logs.push(`❌ Límite de tiempo excedido (Timeout). El servidor de StarPOS remoto no respondió en 4000ms.`);
           infrastructureAdvice = `1. Asegúrese de que el servidor local de StarPOS está encendido y ejecutándose en la IP/Puerto indicados (${port}).\n2. Verifique que la red local tenga el puerto ${port} (estándar 8090) liberado y no esté bloqueado por un Firewall de Windows o antivirus.\n3. Confirme que la regla de NAT/Port Forwarding en el Router del comercio esté correctamente mapeando el tráfico externo al puerto de la terminal StarPOS física.`;
-        } else if (innerErr.code === 'ENOTFOUND' || innerErr.message?.toLowerCase().includes('dns') || innerErr.message?.toLowerCase().includes('getaddrinfo')) {
+        } else if ((ie as NodeJS.ErrnoException).code === 'ENOTFOUND' || ie.message?.toLowerCase().includes('dns') || ie.message?.toLowerCase().includes('getaddrinfo')) {
           errorType = "DNS_ERROR";
           logs.push(`❌ Error de resolución de nombre (DNS). No se pudo resolver el host '${host}'.`);
           infrastructureAdvice = "1. Verifique que la URL de servicio de StarPOS configurada sea válida.\n2. Si utiliza un dominio dinámico (como No-IP o DynDNS), confirme que el cliente de actualización del router esté activo y reportando la IP pública correcta.";
-        } else if (innerErr.code === 'ECONNREFUSED' || innerErr.message?.toLowerCase().includes('refused') || innerErr.message?.toLowerCase().includes('fetch failed')) {
+        } else if ((ie as NodeJS.ErrnoException).code === 'ECONNREFUSED' || ie.message?.toLowerCase().includes('refused') || ie.message?.toLowerCase().includes('fetch failed')) {
           errorType = "CONNECTION_REFUSED";
           logs.push(`❌ Conexión rechazada (Connection Refused). El servidor de StarPOS remoto está apagado o el puerto está cerrado.`);
           infrastructureAdvice = `1. Verifique que el servicio del motor de integración StarPOS esté activado en la máquina host local.\n2. Confirme que la regla de cortafuegos (Firewall) permita tráfico entrante en el puerto ${port} (estándar 8090).\n3. Revise si el puerto cambió en el archivo de configuración del sistema de facturación local.`;
         } else {
           errorType = "NETWORK_ERROR";
-          logs.push(`❌ Error general de red: ${innerErr.message}`);
+          logs.push(`❌ Error general de red: ${ie.message}`);
           infrastructureAdvice = `1. Confirme que la conexión de internet del kiosco esté estable.\n2. Verifique la configuración del puerto 8090 en el Router del comercio y compruebe las exclusiones de cortafuegos.`;
         }
       }
-    } catch (outerErr: any) {
-      details = outerErr.message || String(outerErr);
+    } catch (outerErr: unknown) {
+      const oe = outerErr instanceof Error ? outerErr : new Error(String(outerErr));
+      details = oe.message;
       errorType = "PARSE_ERROR";
-      logs.push(`❌ Error al analizar la URL de configuración: ${outerErr.message}`);
+      logs.push(`❌ Error al analizar la URL de configuración: ${oe.message}`);
       infrastructureAdvice = "Verifique que STARPOS_SERVICE_URL sea una dirección web válida completa, incluyendo el protocolo (http:// o https://). Ejemplo: http://190.112.45.10:8090";
     }
 
@@ -204,7 +205,6 @@ export function starposRoutes({ firestoreDb }: { firestoreDb: Firestore }): Rout
     const isConfigured = !!config.userId && !!config.secret && !!config.serviceUrl;
 
     if (!isConfigured) {
-      // Demo Mode simulation
       await new Promise(resolve => setTimeout(resolve, 1500));
       return res.json({
         success: true,
@@ -231,10 +231,11 @@ export function starposRoutes({ firestoreDb }: { firestoreDb: Firestore }): Rout
     try {
       const report = await syncCatalogToStarPOS(productsList);
       return res.json(report);
-    } catch (err: any) {
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
       return res.status(502).json({
         success: false,
-        error: err.message || "Error al sincronizar catálogo con StarPOS"
+        error: msg || "Error al sincronizar catálogo con StarPOS"
       });
     }
   });
@@ -242,7 +243,7 @@ export function starposRoutes({ firestoreDb }: { firestoreDb: Firestore }): Rout
   // Fetch sales and sync stock trigger
   router.post("/sync-sales", requireAdmin, async (req, res) => {
     const { productsList } = req.body;
-  
+
     const config = {
       userId: process.env.STARPOS_USER_ID || "",
       secret: process.env.STARPOS_SECRET || "",
@@ -252,16 +253,14 @@ export function starposRoutes({ firestoreDb }: { firestoreDb: Firestore }): Rout
     const isConfigured = !!config.userId && !!config.secret && !!config.serviceUrl;
 
     if (!isConfigured) {
-      // Demo Mode simulation
       await new Promise(resolve => setTimeout(resolve, 1200));
-    
+
       const mockReductions = [
         { productName: "Queso Cremoso x100g", sku: "SKU-QUESO-CREMOSO", qty: 2 },
         { productName: "Coca-Cola 500ml", sku: "SKU-COCA-500", qty: 5 },
         { productName: "Alfajor Triple Milka", sku: "SKU-ALFAJOR-TRIPLE", qty: 3 }
       ];
 
-      // Let's perform a demo decrement on Firestore products if they exist
       try {
         const { getDocs, collection, doc, updateDoc } = await import("firebase/firestore");
         const snap = await getDocs(collection(firestoreDb, 'products'));
@@ -279,11 +278,11 @@ export function starposRoutes({ firestoreDb }: { firestoreDb: Firestore }): Rout
           }
         }
         console.log(`[Demo Sync] Decremented stock of ${count} matching demo products in Firestore.`);
-      } catch (e: any) {
-        console.warn("Could not decrement demo stock in firestore:", e.message);
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        console.warn("Could not decrement demo stock in firestore:", msg);
       }
 
-      // Save a simulated ticket inside Firestore as well to display in latest sales
       try {
         const { doc, setDoc } = await import("firebase/firestore");
         const demoTicketId = `DEMO-TX-${Date.now()}`;
@@ -305,8 +304,9 @@ export function starposRoutes({ firestoreDb }: { firestoreDb: Firestore }): Rout
           total: 8500,
           importedAt: new Date().toISOString()
         });
-      } catch (e: any) {
-        console.warn("Could not write demo ticket to Firestore:", e.message);
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        console.warn("Could not write demo ticket to Firestore:", msg);
       }
 
       return res.json({
@@ -334,15 +334,16 @@ export function starposRoutes({ firestoreDb }: { firestoreDb: Firestore }): Rout
     try {
       const result = await syncSalesAndDiscountStock(productsList || []);
       return res.json(result);
-    } catch (err: any) {
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
       return res.status(502).json({
         success: false,
-        error: err.message || "Error al sincronizar ventas con StarPOS"
+        error: msg || "Error al sincronizar ventas con StarPOS"
       });
     }
   });
 
-  // Direct stock synchronization from /v1/CurrentStock
+  // Direct stock synchronization
   router.post("/sync-stock", requireAdmin, async (req, res) => {
     const config = {
       userId: process.env.STARPOS_USER_ID || "",
@@ -353,7 +354,6 @@ export function starposRoutes({ firestoreDb }: { firestoreDb: Firestore }): Rout
     const isConfigured = !!config.userId && !!config.secret && !!config.serviceUrl;
 
     if (!isConfigured) {
-      // Demo Mode simulation
       await new Promise(resolve => setTimeout(resolve, 1000));
       return res.json({
         success: true,
@@ -374,10 +374,11 @@ export function starposRoutes({ firestoreDb }: { firestoreDb: Firestore }): Rout
     try {
       const result = await syncStockFromStarPOS();
       return res.json(result);
-    } catch (err: any) {
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
       return res.status(502).json({
         success: false,
-        error: err.message || "Error al sincronizar stock con StarPOS"
+        error: msg || "Error al sincronizar stock con StarPOS"
       });
     }
   });
@@ -396,13 +397,14 @@ export function starposRoutes({ firestoreDb }: { firestoreDb: Firestore }): Rout
         .orderBy("importedAt", "desc")
         .limit(20)
         .get();
-      const list: any[] = [];
+      const list: Record<string, unknown>[] = [];
       snap.forEach(docObj => {
         list.push({ id: docObj.id, ...docObj.data() });
       });
       return res.json({ success: true, sales: list });
-    } catch (err: any) {
-      console.warn("[StarPOS] No se pudo consultar starpos_imported_sales:", err.message);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn("[StarPOS] No se pudo consultar starpos_imported_sales:", msg);
       return res.json({ success: true, sales: [], degraded: true });
     }
   });
