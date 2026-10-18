@@ -12,6 +12,12 @@ export interface Product {
   neww?: boolean;
   image?: string;
   codigoFacturador?: string;
+  /** Código de barras EAN/UPC leído con escáner o cámara */
+  barcode?: string;
+  /** SKU interno para control de inventario */
+  sku?: string;
+  /** Cantidad en stock (unidades disponibles) */
+  stockQty?: number;
 }
 
 export interface OrderItem {
@@ -98,4 +104,3 @@ export interface BillingConfig {
   apiUrl: string;
   apiKey: string;
 }
-

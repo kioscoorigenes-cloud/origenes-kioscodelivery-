@@ -241,6 +241,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [formImage, setFormImage] = useState<string>('');
   const [isUploadingPhoto, setIsUploadingPhoto] = useState<boolean>(false);
   const [formCodigoFacturador, setFormCodigoFacturador] = useState<string>('');
+  const [formBarcode, setFormBarcode] = useState<string>('');
+  const [formSku, setFormSku] = useState<string>('');
+  const [formStockQty, setFormStockQty] = useState<string>('');
+  const [showBarcodeCamera, setShowBarcodeCamera] = useState<boolean>(false);
 
   // Modal Deletion & Facturador connection states
   const [productToDelete, setProductToDelete] = useState<Product | null>(null);
@@ -1067,6 +1071,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     setFormImage(p.image || '');
     setFormInStock(p.inStock);
     setFormCodigoFacturador(p.codigoFacturador || '');
+    setFormBarcode(p.barcode || '');
+    setFormSku(p.sku || '');
+    setFormStockQty(p.stockQty != null ? p.stockQty.toString() : '');
     setShowingAddForm(true);
   };
 
@@ -1082,7 +1089,79 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     setFormInStock(true);
     setFormValidationMsg('');
     setFormCodigoFacturador('');
+    setFormBarcode('');
+    setFormSku('');
+    setFormStockQty('');
+    setShowBarcodeCamera(false);
   };
+
+  // Buscar producto por código de barras escaneado
+  const handleBarcodeScan = (code: string) => {
+    const trimmed = code.trim();
+    if (!trimmed) return;
+    setFormBarcode(trimmed);
+    setShowBarcodeCamera(false);
+    // Buscar si ya existe un producto con ese código
+    const existing = products.find(p => p.barcode === trimmed || p.codigoFacturador === trimmed);
+    if (existing) {
+      populateEditForm(existing);
+      showToast(`Producto encontrado: ${existing.name}`);
+    } else {
+      showToast('Código nuevo — completá los datos del producto');
+    }
+  };
+
+  // Cámara para escanear código de barras (celular)
+  useEffect(() => {
+    if (!showBarcodeCamera) return;
+    const video = document.getElementById('barcode-video') as HTMLVideoElement | null;
+    if (!video) return;
+
+    let stream: MediaStream | null = null;
+    let animFrameId: number | null = null;
+    let stopped = false;
+
+    const startCamera = async () => {
+      try {
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'environment', width: { ideal: 1280 }, height: { ideal: 720 } }
+        });
+        if (stopped) { stream.getTracks().forEach(t => t.stop()); return; }
+        video.srcObject = stream;
+        await video.play();
+
+        // Usar BarcodeDetector nativo si está disponible (Chrome Android)
+        if ('BarcodeDetector' in window) {
+          const detector = new (window as any).BarcodeDetector({ formats: ['ean_13', 'ean_8', 'upc_a', 'upc_e', 'code_128', 'code_39'] });
+          const scan = async () => {
+            if (stopped) return;
+            try {
+              const barcodes = await detector.detect(video);
+              if (barcodes.length > 0) {
+                handleBarcodeScan(barcodes[0].rawValue);
+                return;
+              }
+            } catch (_) {}
+            animFrameId = requestAnimationFrame(scan);
+          };
+          animFrameId = requestAnimationFrame(scan);
+        }
+      } catch (err) {
+        console.error('Error accediendo a la cámara:', err);
+        showToast('No se pudo acceder a la cámara');
+        setShowBarcodeCamera(false);
+      }
+    };
+
+    startCamera();
+
+    return () => {
+      stopped = true;
+      if (animFrameId) cancelAnimationFrame(animFrameId);
+      if (stream) stream.getTracks().forEach(t => t.stop());
+    };
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [showBarcodeCamera]);
 
   // Foto propia desde el dispositivo: comprime y sube a Firebase Storage.
   // Si Storage no esta disponible, guarda la foto comprimida dentro del
@@ -1237,6 +1316,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       inStock: formInStock,
       ...(formImage.trim() ? { image: formImage.trim() } : {}),
       ...(formCodigoFacturador.trim() ? { codigoFacturador: formCodigoFacturador.trim() } : {}),
+      ...(formBarcode.trim() ? { barcode: formBarcode.trim() } : {}),
+      ...(formSku.trim() ? { sku: formSku.trim() } : {}),
+      ...(formStockQty.trim() && !isNaN(parseInt(formStockQty)) ? { stockQty: parseInt(formStockQty) } : {}),
     };
 
     if (editingProduct) {
@@ -1256,7 +1338,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
   // EXPORT CSV
   const triggerCsvExport = () => {
-    const headers = 'nombre,marca,precio,precio_original,categoria,descripcion,en_stock,imagen\n';
+    const headers = 'nombre,marca,precio,precio_original,categoria,descripcion,en_stock,imagen,codigo_barras,sku,stock_cantidad\n';
     const lines = products.map(p => {
       const escape = (str: string) => `"${str.replace(/"/g, '""')}"`;
       return [
@@ -1267,7 +1349,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         p.cat,
         escape(p.desc || ''),
         p.inStock ? 'si' : 'no',
-        escape(p.image || '')
+        escape(p.image || ''),
+        escape(p.barcode || ''),
+        escape(p.sku || ''),
+        p.stockQty != null ? p.stockQty : ''
       ].join(',');
     }).join('\n');
 
@@ -2724,6 +2809,20 @@ className="bg-slate-800 hover:bg-slate-700 text-sky-400 border border-slate-700/
                               ⚠️ SIN SKU
                             </span>
                           )}
+                          {p.stockQty != null && (
+                            <span className={`text-[7.5px] font-black uppercase px-1 py-0.5 rounded tracking-wide font-mono ${
+                              p.stockQty <= 0 ? 'bg-red-50 text-red-600 border border-red-200' :
+                              p.stockQty <= 5 ? 'bg-amber-50 text-amber-600 border border-amber-200' :
+                              'bg-slate-50 text-slate-600 border border-slate-200'
+                            }`} title={`Stock: ${p.stockQty} unidades`}>
+                              📦 {p.stockQty} u.
+                            </span>
+                          )}
+                          {p.barcode && (
+                            <span className="text-[7px] font-mono text-slate-400 bg-slate-50 px-1 py-0.5 rounded border border-slate-100" title={`Código de barras: ${p.barcode}`}>
+                              {p.barcode}
+                            </span>
+                          )}
                         </div>
                       </div>
 
@@ -4100,9 +4199,61 @@ className="bg-slate-800 hover:bg-slate-700 text-sky-400 border border-slate-700/
                 )}
 
                 <div className="flex flex-col gap-3.5">
+                  {/* ESCÁNER DE CÓDIGO DE BARRAS */}
+                  <div className="bg-blue-50 border border-blue-200 rounded-xl p-3">
+                    <label className="block text-[10.5px] font-extrabold text-blue-700 uppercase mb-1.5">
+                      📷 Código de Barras (Escáner / Cámara)
+                    </label>
+                    <div className="flex gap-2">
+                      <input
+                        type="text"
+                        inputMode="numeric"
+                        placeholder="Escaneá con la pistola o escribí el código..."
+                        value={formBarcode}
+                        onChange={(e) => setFormBarcode(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') {
+                            e.preventDefault();
+                            handleBarcodeScan(formBarcode);
+                          }
+                        }}
+                        autoFocus
+                        className="flex-1 bg-white border border-blue-300 rounded-lg p-2.5 text-sm font-black text-blue-900 focus:outline-none focus:ring-2 focus:ring-blue-400 placeholder:font-normal placeholder:text-blue-300"
+                      />
+                      <button
+                        type="button"
+                        onClick={() => setShowBarcodeCamera(!showBarcodeCamera)}
+                        className="px-3 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-xs font-bold shrink-0 flex items-center gap-1"
+                        title="Escanear con la cámara del celular"
+                      >
+                        📱 Cámara
+                      </button>
+                    </div>
+                    {showBarcodeCamera && (
+                      <div className="mt-2 bg-white border border-blue-200 rounded-lg p-3 text-center">
+                        <div id="barcode-scanner-container" className="w-full aspect-video bg-slate-900 rounded-lg overflow-hidden relative">
+                          <video id="barcode-video" className="w-full h-full object-cover" />
+                        </div>
+                        <p className="text-[10px] text-blue-500 font-semibold mt-1.5">
+                          Apuntá la cámara al código de barras del producto
+                        </p>
+                        <button
+                          type="button"
+                          onClick={() => setShowBarcodeCamera(false)}
+                          className="mt-2 px-3 py-1 bg-slate-200 rounded text-xs font-bold text-slate-600"
+                        >
+                          Cerrar cámara
+                        </button>
+                      </div>
+                    )}
+                    <p className="text-[10px] text-blue-500 font-semibold mt-1">
+                      💡 En la PC: escaneá con la pistola, el código aparece solo. En el celular: tocá "Cámara".
+                    </p>
+                  </div>
+
                   <div>
                     <label className="block text-[10.5px] font-extrabold text-slate-500 uppercase mb-1">Nombre Corto *</label>
-                    <input 
+                    <input
                       type="text"
                       placeholder="Ej: Coca-Cola 600ml"
                       value={formName}
@@ -4138,7 +4289,7 @@ className="bg-slate-800 hover:bg-slate-700 text-sky-400 border border-slate-700/
 
                   <details className="border border-slate-100 rounded-xl p-2 bg-slate-50/50 mt-1 cursor-pointer">
                     <summary className="text-[11px] font-black text-slate-500 select-none uppercase tracking-wide focus:outline-none py-1">
-                      ➕ Opciones avanzadas (marca, precio original, descripción)
+                      ➕ Opciones avanzadas (marca, precio original, SKU, stock, descripción)
                     </summary>
                     <div className="pt-3 border-t border-slate-200/55 flex flex-col gap-3.5 mt-2 cursor-default" onClick={(e) => e.stopPropagation()}>
                       <div>
@@ -4175,8 +4326,32 @@ className="bg-slate-800 hover:bg-slate-700 text-sky-400 border border-slate-700/
                       </div>
 
                       <div>
+                        <label className="block text-[10.5px] font-extrabold text-slate-500 uppercase mb-1">SKU (Código Interno)</label>
+                        <input
+                          type="text"
+                          placeholder="Ej: BEB-COCA-600"
+                          value={formSku}
+                          onChange={(e) => setFormSku(e.target.value)}
+                          className="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs font-semibold focus:outline-none placeholder-slate-400"
+                        />
+                      </div>
+
+                      <div>
+                        <label className="block text-[10.5px] font-extrabold text-slate-500 uppercase mb-1">Stock (Cantidad en Unidades)</label>
+                        <input
+                          type="number"
+                          placeholder="Ej: 50"
+                          value={formStockQty}
+                          onChange={(e) => setFormStockQty(e.target.value)}
+                          min="0"
+                          className="w-full bg-white border border-slate-200 rounded-lg p-2 text-xs font-semibold focus:outline-none placeholder-slate-400"
+                        />
+                        <p className="text-[10px] text-slate-400 font-semibold mt-0.5">Cantidad actual de unidades disponibles para venta.</p>
+                      </div>
+
+                      <div>
                         <label className="block text-[10.5px] font-extrabold text-slate-500 uppercase mb-1">Descripción Breve</label>
-                        <textarea 
+                        <textarea
                           placeholder="Ej: Detalle de tamaño, empaque o sabor..."
                           value={formDesc}
                           onChange={(e) => setFormDesc(e.target.value)}
