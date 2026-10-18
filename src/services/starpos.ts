@@ -1,869 +1,507 @@
-import { doc, getDoc, getDocs, updateDoc, collection, setDoc } from 'firebase/firestore';
-import { initializeApp as initAdminApp, getApps as getAdminApps, cert } from 'firebase-admin/app';
-import { getFirestore as getAdminFirestoreInstance, Firestore as AdminFirestore } from 'firebase-admin/firestore';
+// Extraido de server.ts: los handlers se agruparon por dominio.
+import { Router } from "express";
+import type { Firestore } from "firebase/firestore";
+import {
+  authenticateStarPOS,
+  syncCatalogToStarPOS,
+  syncSalesAndDiscountStock,
+  syncStockFromStarPOS,
+  syncPricesFromStarPOS,
+  fullDailySync
+} from "../services/starpos";
+import { requireAdmin, getAdminFirestore } from "../services/serverAuth";
 
-let adminDbInstance: AdminFirestore | null = null;
-function getAdminDb(): AdminFirestore | null {
-  if (adminDbInstance) return adminDbInstance;
-  const raw = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
-  if (!raw) return null;
-  try {
-    const serviceAccount = JSON.parse(raw);
-    const apps = getAdminApps();
-    const app = apps.length > 0 ? apps[0] : initAdminApp({ credential: cert(serviceAccount) });
-    adminDbInstance = getAdminFirestoreInstance(app, 'ai-studio-b0577a6e-0f03-46cd-a014-1334f40913ad');
-    return adminDbInstance;
-  } catch (e) {
-    console.error('Failed to initialize firebase-admin:', e);
-    return null;
-  }
-}
-import { db } from '../firebase';
-import { Product } from '../types';
+export function starposRoutes({ firestoreDb }: { firestoreDb: Firestore }): Router {
+  const router = Router();
 
-// Types for StarPOS API Entities
-export interface StarPOSTax {
-  id: string;
-  name: string;
-  percentage: number;
-}
+  // ==========================================
+  // CAPA DE INTEGRACIÓN CON STARPOS (SECURE PROXIES)
+  // ==========================================
 
-export interface StarPOSPriceList {
-  id: string;
-  name: string;
-  active: boolean;
-}
+  // Check StarPOS Configuration and Connection Status
+  router.get("/status", requireAdmin, async (req, res) => {
+    const config = {
+      userId: process.env.STARPOS_USER_ID || "",
+      secret: process.env.STARPOS_SECRET || "",
+      serviceUrl: process.env.STARPOS_SERVICE_URL || ""
+    };
 
-export interface StarPOSCategory {
-  id: string;
-  name: string;
-}
+    const isConfigured = !!config.userId && !!config.secret && !!config.serviceUrl;
 
-export interface StarPOSFamily {
-  id: string;
-  name: string;
-  category_id: string;
-}
-
-export interface StarPOSBrand {
-  id: string;
-  name: string;
-}
-
-export interface StarPOSProductCode {
-  id?: string;
-  code: string;
-  type?: 'BARCODE' | 'SKU';
-  quantity?: number;
-}
-
-export interface StarPOSProductTax {
-  id?: string;
-  tax_id: string;
-  value?: number;
-}
-
-export interface StarPOSProductBranch {
-  id?: string;
-  branch_id?: string;
-}
-
-export interface StarPOSProductPrice {
-  id?: string;
-  pricelist_id?: string;
-  price?: number;
-  price_list_id?: string;
-  price_sell?: number;
-  last_modification?: string;
-}
-
-export interface StarPOSProductPriceOffer {
-  id: string;
-  price?: number;
-  price_list_id?: string;
-  price_sell?: number;
-  price_buy?: number;
-  active: boolean;
-  date_begin?: string;
-  last_modification?: string;
-}
-
-export interface StarPOSProductSalesByQty {
-  id?: string;
-  qty?: number;
-  discount_percentage?: number;
-}
-
-export interface StarPOSProduct {
-  id: string;
-  name: string;
-  category_id: string;
-  family_id: string;
-  brand_id: string;
-  description: string;
-  in_stock: boolean;
-  products_codes: StarPOSProductCode[];
-  products_taxes: StarPOSProductTax[];
-  products_branches: (StarPOSProductBranch | string)[];
-  products_prices: StarPOSProductPrice[];
-  products_price_offers: StarPOSProductPriceOffer[];
-  products_sales_by_qty: StarPOSProductSalesByQty[];
-}
-
-export interface StarPOSPaymentMethod {
-  id: string;
-  name: string;
-  active: boolean;
-}
-
-export interface StarPOSPlan {
-  id: string;
-  name: string;
-  installments: number;
-  interest: number;
-}
-
-export interface StarPOSTicketLine {
-  id: string;
-  product_id: string;
-  product_name: string;
-  // La API de StarPOS envía la cantidad vendida en el campo "units" (no "qty").
-  units: number;
-  price: number;
-  subtotal: number;
-}
-
-export interface StarPOSTaxLine {
-  tax_id: string;
-  amount: number;
-}
-
-export interface StarPOSPayment {
-  payment_method_id: string;
-  amount: number;
-}
-
-export interface StarPOSTicket {
-  id: string;
-  ticket_number: string;
-  timestamp: string;
-  ticket_lines: StarPOSTicketLine[];
-  tax_lines: StarPOSTaxLine[];
-  payments: StarPOSPayment[];
-  subtotal: number;
-  total: number;
-}
-
-export interface StarPOSClosedCash {
-  id: string;
-  open_timestamp: string;
-  close_timestamp: string;
-  total_cash: number;
-  total_card: number;
-  total_sales: number;
-}
-
-// Singleton state to store the access token in memory
-let cachedToken: string | null = null;
-let tokenExpiry: number = 0; // Epoch timestamp in ms
-
-/**
- * Clean helper to safely fetch from environments or firestore settings
- */
-export async function getStarPOSConfig() {
-  const defaults = {
-    userId: process.env.STARPOS_USER_ID || "",
-    secret: process.env.STARPOS_SECRET || "",
-    serviceUrl: process.env.STARPOS_SERVICE_URL || ""
-  };
-
-  try {
-    const adminDb = getAdminDb();
-    if (adminDb) {
-      const snap = await adminDb.collection('settings').doc('starpos').get();
-      if (snap.exists) {
-        const data = snap.data();
-        if (data) {
-          return {
-            userId: data.userId || defaults.userId,
-            secret: data.secret || defaults.secret,
-            serviceUrl: data.serviceUrl || defaults.serviceUrl
-          };
+    if (!isConfigured) {
+      return res.json({
+        configured: false,
+        status: "SIN_CONFIGURAR",
+        message: "No se detectaron las variables de entorno para StarPOS. La sincronización se ejecutará en MODO DEMO SIMULADO.",
+        config: {
+          userId: "",
+          serviceUrl: "Demo Local",
+          secretMasked: ""
         }
-      }
-    } else {
-      const settingsRef = doc(db, 'settings', 'starpos');
-      const snap = await getDoc(settingsRef);
-      if (snap.exists()) {
-        const data = snap.data();
-        return {
-          userId: data.userId || defaults.userId,
-          secret: data.secret || defaults.secret,
-          serviceUrl: data.serviceUrl || defaults.serviceUrl
-        };
-      }
-    }
-  } catch (err) {
-    console.warn("Could not read settings/starpos from firestore, using environment variables:", err);
-  }
-
-  return defaults;
-}
-
-/**
- * Helper: parse JSON safely from a Response, throwing a clear error if the
- * body is not valid JSON (e.g. "upstream error" from a reverse proxy).
- */
-async function safeJsonParse<T = unknown>(response: Response, context: string): Promise<T> {
-  const text = await response.text();
-  try {
-    return JSON.parse(text) as T;
-  } catch {
-    // Mostrar los primeros 200 chars del cuerpo para diagnóstico
-    const preview = text.length > 200 ? text.slice(0, 200) + '…' : text;
-    throw new Error(
-      `Respuesta no-JSON de StarPOS en ${context}: "${preview}" (HTTP ${response.status}). ` +
-      'Esto suele significar que el túnel (Tailscale/ngrok) está caído o que StarPOS devolvió un error de texto.'
-    );
-  }
-}
-
-/**
- * 1) AUTENTICACIÓN: POST to authentication endpoint and cache token
- */
-export async function authenticateStarPOS(forceRefresh = false): Promise<string> {
-  const config = await getStarPOSConfig();
-
-  if (!config.userId || !config.secret || !config.serviceUrl) {
-    throw new Error("Missing StarPOS credentials or URL. Configure STARPOS_USER_ID, STARPOS_SECRET, and STARPOS_SERVICE_URL.");
-  }
-
-  // Check cache
-  if (!forceRefresh && cachedToken && Date.now() < tokenExpiry) {
-    return cachedToken;
-  }
-
-  const authUrl = `${config.serviceUrl.replace(/\/$/, '')}/v1/Authenticate`;
-
-  const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 10000);
-  try {
-    const response = await fetch(authUrl, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        user_id: config.userId,
-        secret: config.secret,
-        service: "https://starpos.com/api"
-      }),
-      signal: controller.signal
-    });
-    clearTimeout(timeoutId);
-
-    if (!response.ok) {
-      throw new Error(`Authentication failed with status ${response.status}`);
-    }
-
-    const data = await safeJsonParse<Record<string, unknown>>(response, '/v1/Authenticate');
-    const payload = data?.payload as Record<string, unknown> | undefined;
-    if (payload?.access_token && typeof payload.access_token === 'string') {
-      cachedToken = payload.access_token;
-      tokenExpiry = Date.now() + 3600 * 1000;
-      return cachedToken;
-    } else {
-      throw new Error("Respuesta de autenticación inválida de StarPOS: falta 'payload.access_token'.");
-    }
-  } catch (error: unknown) {
-    clearTimeout(timeoutId);
-    const err = error instanceof Error ? error : new Error(String(error));
-    const msg = err.name === 'AbortError' ? 'timeout (StarPOS no respondió en 10s)' : err.message;
-    console.error(`StarPOS Auth Error at ${authUrl}:`, msg);
-    throw new Error(`Error de autenticación StarPOS: ${msg}`);
-  }
-}
-
-/**
- * Safe fetch helper using cached token, with automatic retry on 401/403.
- */
-async function authenticatedFetch(endpoint: string, options: RequestInit = {}): Promise<Response> {
-  const config = await getStarPOSConfig();
-  const url = `${config.serviceUrl.replace(/\/$/, '')}${endpoint}`;
-
-  const doFetch = async (token: string): Promise<Response> => {
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 10000);
-    try {
-      return await fetch(url, {
-        ...options,
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${token}`,
-          ...(options.headers || {})
-        },
-        signal: controller.signal
       });
-    } finally {
-      clearTimeout(timeoutId);
     }
-  };
 
-  let res = await doFetch(await authenticateStarPOS());
-  if (res.status === 401 || res.status === 403) {
-    res = await doFetch(await authenticateStarPOS(true));
-  }
-  return res;
-}
-
-/**
- * Helper to slugify categories, brands, etc. to clean IDs
- */
-function toSlug(str: string): string {
-  return str.toLowerCase()
-    .normalize('NFD')
-    .replace(/[̀-ͯ]/g, '')
-    .replace(/[^a-z0-9]+/g, '_')
-    .replace(/^_+|_+$/g, '');
-}
-
-/**
- * 2) ENVÍO DE CATÁLOGO (POST) respecting strict chronological order of operations
- */
-export interface SyncReport {
-  success: boolean;
-  logs: string[];
-  steps: {
-    taxes: boolean;
-    priceList: boolean;
-    categories: boolean;
-    families: boolean;
-    brands: boolean;
-    products: boolean;
-    paymentMethods: boolean;
-    plans: boolean;
-  };
-  syncedCount: number;
-}
-
-export async function syncCatalogToStarPOS(products: Product[]): Promise<SyncReport> {
-  const report: SyncReport = {
-    success: false,
-    logs: [],
-    steps: {
-      taxes: false,
-      priceList: false,
-      categories: false,
-      families: false,
-      brands: false,
-      products: false,
-      paymentMethods: false,
-      plans: false
-    },
-    syncedCount: 0
-  };
-
-  try {
-    report.logs.push("Iniciando sincronización obligatoria de catálogo...");
-
-    await authenticateStarPOS();
-    report.logs.push("🔑 Autenticación con StarPOS exitosa.");
-
-    // ---- STEP 1: Taxes ----
-    report.logs.push("1/8 Creando Impuestos (/v1/Taxes)...");
-    const taxes: StarPOSTax[] = [
-      { id: "tax_iva_21", name: "IVA 21%", percentage: 21 },
-      { id: "tax_iva_105", name: "IVA 10.5%", percentage: 10.5 },
-      { id: "tax_exento", name: "Exento", percentage: 0 }
-    ];
-    const taxesRes = await authenticatedFetch('/v1/Taxes', {
-      method: 'POST',
-      body: JSON.stringify(taxes)
-    });
-    if (!taxesRes.ok) {
-      const body = await taxesRes.text().catch(() => '');
-      throw new Error(`Fallo al crear impuestos (Status: ${taxesRes.status}): ${body.slice(0, 200)}`);
-    }
-    report.steps.taxes = true;
-    report.logs.push("✅ Impuestos creados con éxito.");
-
-    // ---- STEP 2: PriceList ----
-    report.logs.push("2/8 Creando Listas de Precios (/v1/PriceList)...");
-    const priceLists: StarPOSPriceList[] = [
-      { id: "price_list_general", name: "Lista General Kiosco", active: true }
-    ];
-    const priceListRes = await authenticatedFetch('/v1/PriceList', {
-      method: 'POST',
-      body: JSON.stringify(priceLists)
-    });
-    if (!priceListRes.ok) {
-      const body = await priceListRes.text().catch(() => '');
-      throw new Error(`Fallo al crear listas de precios (Status: ${priceListRes.status}): ${body.slice(0, 200)}`);
-    }
-    report.steps.priceList = true;
-    report.logs.push("✅ Lista de precios creada con éxito.");
-
-    // ---- STEP 3: Categories ----
-    report.logs.push("3/8 Creando Categorías (/v1/Categories)...");
-    const uniqueCats = Array.from(new Set(products.map(p => p.cat || 'Kiosco')));
-    const categories: StarPOSCategory[] = uniqueCats.map(cat => ({
-      id: `cat_${toSlug(cat)}`,
-      name: cat
-    }));
-    const catRes = await authenticatedFetch('/v1/Categories', {
-      method: 'POST',
-      body: JSON.stringify(categories)
-    });
-    if (!catRes.ok) {
-      const body = await catRes.text().catch(() => '');
-      throw new Error(`Fallo al crear categorías (Status: ${catRes.status}): ${body.slice(0, 200)}`);
-    }
-    report.steps.categories = true;
-    report.logs.push(`✅ ${categories.length} Categorías creadas con éxito.`);
-
-    // ---- STEP 4: Families ----
-    report.logs.push("4/8 Creando Familias (/v1/Families)...");
-    const families: StarPOSFamily[] = uniqueCats.map(cat => ({
-      id: `fam_${toSlug(cat)}`,
-      name: `Familia ${cat}`,
-      category_id: `cat_${toSlug(cat)}`
-    }));
-    const famRes = await authenticatedFetch('/v1/Families', {
-      method: 'POST',
-      body: JSON.stringify(families)
-    });
-    if (!famRes.ok) {
-      const body = await famRes.text().catch(() => '');
-      throw new Error(`Fallo al crear familias (Status: ${famRes.status}): ${body.slice(0, 200)}`);
-    }
-    report.steps.families = true;
-    report.logs.push("✅ Familias de categorías creadas con éxito.");
-
-    // ---- STEP 5: Brands ----
-    report.logs.push("5/8 Creando Marcas (/v1/Brands)...");
-    const uniqueBrands = Array.from(new Set(products.map(p => p.brand || 'Genérico')));
-    const brands: StarPOSBrand[] = uniqueBrands.map(brand => ({
-      id: `brand_${toSlug(brand)}`,
-      name: brand
-    }));
-    const brandRes = await authenticatedFetch('/v1/Brands', {
-      method: 'POST',
-      body: JSON.stringify(brands)
-    });
-    if (!brandRes.ok) {
-      const body = await brandRes.text().catch(() => '');
-      throw new Error(`Fallo al crear marcas (Status: ${brandRes.status}): ${body.slice(0, 200)}`);
-    }
-    report.steps.brands = true;
-    report.logs.push(`✅ ${brands.length} Marcas creadas con éxito.`);
-
-    // ---- STEP 6: Products ----
-    report.logs.push("6/8 Creando Catálogo de Productos con sub-colecciones (/Products)...");
-    const starPOSProducts: StarPOSProduct[] = products.map(p => {
-      const pId = p.id.toString();
-      const codeValue = p.codigoFacturador || `SKU-${toSlug(p.name)}-${pId}`;
-      const catSlug = `cat_${toSlug(p.cat || 'Kiosco')}`;
-      const famSlug = `fam_${toSlug(p.cat || 'Kiosco')}`;
-      const brandSlug = `brand_${toSlug(p.brand || 'Genérico')}`;
-
-      return {
-        id: pId,
-        name: p.name,
-        category_id: catSlug,
-        family_id: famSlug,
-        brand_id: brandSlug,
-        description: p.desc || p.name,
-        in_stock: p.inStock,
-        products_codes: [
-          { code: codeValue, quantity: 1 }
-        ],
-        products_taxes: [
-          { tax_id: 'tax_iva_21', value: 21 }
-        ],
-        products_branches: [
-          'branch_principal'
-        ],
-        products_prices: [
-          { price_list_id: 'price_list_general', price_sell: (p.orig && p.orig > p.price) ? p.orig : p.price, last_modification: new Date().toISOString().slice(0, 10) }
-        ],
-        products_price_offers: (p.orig && p.orig > p.price) ? [
-          { id: `offer_${pId}`, price_list_id: 'price_list_general', price_sell: p.price, active: true, date_begin: new Date().toISOString().slice(0, 10), last_modification: new Date().toISOString().slice(0, 10) }
-        ] : [],
-        products_sales_by_qty: []
-      };
-    });
-
-    const prodRes = await authenticatedFetch('/v1/Products', {
-      method: 'POST',
-      body: JSON.stringify(starPOSProducts)
-    });
-    if (!prodRes.ok) {
-      const errBody = await prodRes.text().catch(() => '');
-      throw new Error(`Fallo al crear catálogo de productos (Status: ${prodRes.status}): ${errBody.slice(0, 300)}`);
-    }
-    report.steps.products = true;
-    report.syncedCount = starPOSProducts.length;
-    report.logs.push(`✅ ${starPOSProducts.length} productos con sub-colecciones enviados con éxito.`);
-
-    // ---- STEP 7: PaymentMethods ----
-    report.logs.push("7/8 Creando Métodos de Pago (/v1/PaymentMethods)...");
-    const paymentMethods: StarPOSPaymentMethod[] = [
-      { id: "pay_cash", name: "Efectivo", active: true },
-      { id: "pay_transfer", name: "Transferencia Bancaria", active: true },
-      { id: "pay_card", name: "Tarjeta de Débito/Crédito", active: true }
-    ];
-    const payRes = await authenticatedFetch('/v1/PaymentMethods', {
-      method: 'POST',
-      body: JSON.stringify(paymentMethods)
-    });
-    if (!payRes.ok) {
-      const body = await payRes.text().catch(() => '');
-      throw new Error(`Fallo al crear métodos de pago (Status: ${payRes.status}): ${body.slice(0, 200)}`);
-    }
-    report.steps.paymentMethods = true;
-    report.logs.push("✅ Métodos de pago registrados.");
-
-    // ---- STEP 8: Plans ----
-    report.logs.push("8/8 Registrando Planes (/v1/Plans)...");
-    const plans: StarPOSPlan[] = [
-      { id: "plan_one_payment", name: "Pago Único Efectivo/Transferencia", installments: 1, interest: 0 },
-      { id: "plan_card_1", name: "Tarjeta 1 Pago sin interés", installments: 1, interest: 0 }
-    ];
-    const planRes = await authenticatedFetch('/v1/Plans', {
-      method: 'POST',
-      body: JSON.stringify(plans)
-    });
-    if (!planRes.ok) {
-      const body = await planRes.text().catch(() => '');
-      throw new Error(`Fallo al registrar planes (Status: ${planRes.status}): ${body.slice(0, 200)}`);
-    }
-    report.steps.plans = true;
-    report.logs.push("✅ Planes de financiación sincronizados.");
-
-    report.success = true;
-    report.logs.push("🎉 ¡La sincronización obligatoria del catálogo en StarPOS se completó con éxito absoluto!");
-  } catch (error: unknown) {
-    report.success = false;
-    const msg = error instanceof Error ? error.message : String(error);
-    report.logs.push(`❌ Sincronización fallida: ${msg}`);
-    console.error("StarPOS Catalog Sync Error:", error);
-  }
-
-  return report;
-}
-
-/**
- * 3) LECTURA DE VENTAS (GET) AND CONCURRENT STOCK REDUCTION
- */
-export interface SyncSalesResult {
-  success: boolean;
-  ticketsFetched: number;
-  closedCashFetched: number;
-  stockReductions: { productName: string; sku: string; qty: number }[];
-  logs: string[];
-}
-
-export async function getStarPOSTickets(): Promise<StarPOSTicket[]> {
-  const response = await authenticatedFetch('/v1/Tickets');
-  if (!response.ok) {
-    throw new Error(`Failed to fetch tickets: Status ${response.status}`);
-  }
-  const data = await safeJsonParse<Record<string, unknown>>(response, '/v1/Tickets');
-  if (Array.isArray(data)) return data;
-  const d = data as Record<string, unknown>;
-  return (d?.Tickets || d?.tickets || d?.data || d?.items || []) as StarPOSTicket[];
-}
-
-export async function getStarPOSClosedCash(): Promise<StarPOSClosedCash[]> {
-  const response = await authenticatedFetch('/v1/ClosedCash');
-  if (!response.ok) {
-    throw new Error(`Failed to fetch closed cash: Status ${response.status}`);
-  }
-  const data = await safeJsonParse<Record<string, unknown>>(response, '/v1/ClosedCash');
-  if (Array.isArray(data)) return data;
-  const d = data as Record<string, unknown>;
-  return (d?.ClosedCash || d?.closedCash || d?.data || d?.items || []) as StarPOSClosedCash[];
-}
-
-/**
- * Full loop to read tickets from StarPOS, filter out already processed ones,
- * and decrement quantities of corresponding Firestore products.
- */
-export async function syncSalesAndDiscountStock(firestoreProducts: Product[]): Promise<SyncSalesResult> {
-  const result: SyncSalesResult = {
-    success: false,
-    ticketsFetched: 0,
-    closedCashFetched: 0,
-    stockReductions: [],
-    logs: []
-  };
-
-  try {
-    result.logs.push("Iniciando importación de ventas de StarPOS...");
-
-    await authenticateStarPOS();
-    result.logs.push("🔑 Conectado con la API de StarPOS.");
-
-    // Fetch Tickets and Closed Cash
-    result.logs.push("Consultando /v1/Tickets...");
-    const tickets = await getStarPOSTickets();
-    result.ticketsFetched = tickets.length;
-    result.logs.push(`Recuperados ${tickets.length} comprobantes de venta.`);
-
-    result.logs.push("Consultando /v1/ClosedCash...");
-    const closedCash = await getStarPOSClosedCash();
-    result.closedCashFetched = closedCash.length;
-    result.logs.push(`Recuperados ${closedCash.length} cierres de caja.`);
-
-    // Fetch synced state from firestore to prevent double discounting
-    const adminDb = getAdminDb();
-    const stateRef = doc(db, 'settings', 'starpos_sync_state');
-    const stateSnap = adminDb
-      ? await adminDb.collection('settings').doc('starpos_sync_state').get()
-      : await getDoc(stateRef);
-    const stateExists = adminDb
-      ? (stateSnap as FirebaseFirestore.DocumentSnapshot).exists
-      : (stateSnap as import('firebase/firestore').DocumentSnapshot).exists();
-    const stateData = stateExists ? (stateSnap.data() as Record<string, unknown> | undefined) : null;
-    const processedTicketIds = new Set<string>(
-      (stateData?.processedTicketIds as string[]) || []
-    );
-
-    result.logs.push(`Se omitirán ${processedTicketIds.size} tickets previamente procesados.`);
-
-    // Read all products from Firestore to keep current context
-    const productsSnap = await getDocs(collection(db, 'products'));
-    const currentProducts: Product[] = [];
-    productsSnap.forEach(docSnap => {
-      currentProducts.push({ ...(docSnap.data() as Product) });
-    });
-
-    const newProcessedTicketIds: string[] = Array.from(processedTicketIds);
-    let stockUpdatedCount = 0;
-
-    for (const ticket of tickets) {
-      // Validación defensiva: si el ticket no tiene la forma esperada, se saltea
-      if (!ticket || typeof ticket.id === 'undefined' || !Array.isArray(ticket.ticket_lines)) {
-        result.logs.push(`   ⚠️ Ticket con forma inválida, se omite.`);
-        continue;
-      }
-      if (processedTicketIds.has(ticket.id)) {
-        continue;
-      }
-
-      result.logs.push(`Procesando ticket nro: ${ticket.ticket_number} (ID: ${ticket.id}). Total: $${ticket.total}`);
-
-      // Loop over ticket lines
-      for (const line of ticket.ticket_lines) {
-        if (!line || typeof line.units !== 'number') { continue; }
-        // Find product with matching code or ID
-        const matchedProduct = currentProducts.find(p =>
-          p.id.toString() === line.product_id ||
-          p.codigoFacturador === line.product_id ||
-          (!!line.product_name && p.name.toLowerCase() === String(line.product_name).toLowerCase())
-        );
-
-        if (matchedProduct) {
-          const knownStock = (matchedProduct as Record<string, unknown>).stockQty;
-          if (typeof knownStock !== 'number') {
-            result.logs.push(`   ⚠️ "${matchedProduct.name}": stock desconocido, no se descuenta (cargá el stock real primero).`);
-            continue;
-          }
-
-          const nextStock = Math.max(0, knownStock - line.units);
-          const nextInStock = nextStock > 0;
-
-          // Update Firestore
-          if (adminDb) {
-            await adminDb.collection('products').doc(matchedProduct.id.toString()).update({
-              stockQty: nextStock,
-              inStock: nextInStock,
-            });
-          } else {
-            const productRef = doc(db, 'products', matchedProduct.id.toString());
-            await updateDoc(productRef, {
-              stockQty: nextStock,
-              inStock: nextInStock,
-            });
-          }
-          result.stockReductions.push({
-            productName: matchedProduct.name,
-            sku: matchedProduct.codigoFacturador || matchedProduct.id.toString(),
-            qty: line.units
-          });
-
-          stockUpdatedCount++;
-          result.logs.push(`   -> Descontado "${matchedProduct.name}" x${line.units}. Nuevo stock: ${nextStock}`);
-        } else {
-          result.logs.push(`   ⚠️ No se encontró producto en tienda para ID/Nombre: "${line.product_name}" (Línea omitida).`);
+    try {
+      const token = await authenticateStarPOS(true);
+      return res.json({
+        configured: true,
+        status: "CONECTADO",
+        message: "¡Conexión establecida con la API local de StarPOS!",
+        config: {
+          userId: config.userId,
+          serviceUrl: config.serviceUrl,
+          secretMasked: config.secret.length > 4 ? "***" + config.secret.slice(-4) : "***"
+        },
+        token: token.slice(0, 8) + "..."
+      });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return res.json({
+        configured: true,
+        status: "ERROR_CONEXION",
+        message: `No se pudo conectar al local físico (${config.serviceUrl}): ${msg}. La tienda entrará en modo resiliente de contingencia.`,
+        config: {
+          userId: config.userId,
+          serviceUrl: config.serviceUrl,
+          secretMasked: config.secret.length > 4 ? "***" + config.secret.slice(-4) : "***"
         }
+      });
+    }
+  });
+
+  // Technical connection diagnostics endpoint
+  router.get("/diagnose", requireAdmin, async (req, res) => {
+    const userId = process.env.STARPOS_USER_ID || "";
+    const secret = process.env.STARPOS_SECRET || "";
+    const serviceUrl = process.env.STARPOS_SERVICE_URL || "";
+
+    if (!userId || !secret || !serviceUrl) {
+      return res.json({
+        success: false,
+        errorType: "CONFIG_MISSING",
+        message: "No se puede diagnosticar la conexión: Faltan credenciales o URL de StarPOS en las variables de entorno.",
+        infrastructureAdvice: "Por favor, configure STARPOS_USER_ID, STARPOS_SECRET, y STARPOS_SERVICE_URL.",
+        logs: [
+          "Falla de configuración local.",
+          "Verifique variables de entorno."
+        ]
+      });
+    }
+
+    const logs: string[] = [];
+    logs.push(`Iniciando diagnóstico técnico de enlace con StarPOS en URL: ${serviceUrl}...`);
+
+    let errorType = "DESCONOCIDO";
+    let infrastructureAdvice = "Verifique la configuración de red general.";
+    let success = false;
+    let details = "";
+
+    try {
+      const urlParsed = new URL(serviceUrl);
+      const host = urlParsed.hostname;
+      const port = urlParsed.port || (urlParsed.protocol === 'https:' ? '443' : '80');
+      logs.push(`DNS & Red: Extrayendo Hostname [${host}] y Puerto [${port}]`);
+
+      if (port !== '8090') {
+        logs.push(`⚠️ Nota: El puerto configurado es [${port}]. El estándar de la integración física de StarPOS suele ser 8090.`);
       }
 
-      // Add to processed list
-      newProcessedTicketIds.push(ticket.id);
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 4000);
 
-      // Save ticket inside a subcollection for audit visibility
-      if (adminDb) {
-        await adminDb.collection('starpos_imported_sales').doc(ticket.id).set({ ...ticket, importedAt: new Date().toISOString() });
-      } else {
-        await setDoc(doc(db, 'starpos_imported_sales', ticket.id), { ...ticket, importedAt: new Date().toISOString() });
-      }
+      const authUrl = `${serviceUrl.replace(/\/$/, '')}/v1/Authenticate`;
+      logs.push(`Conectando con endpoint de autenticación: ${authUrl}`);
 
-      // Persistir el estado tras CADA ticket procesado para evitar doble descuento
       try {
-        if (adminDb) {
-          await adminDb.collection('settings').doc('starpos_sync_state').set({ processedTicketIds: newProcessedTicketIds, lastSyncTime: new Date().toISOString() });
-        } else {
-          await setDoc(stateRef, { processedTicketIds: newProcessedTicketIds, lastSyncTime: new Date().toISOString() });
-        }
-      } catch { /* se reintenta en la próxima corrida */ }
-
-      // Mark as transmitted in StarPOS API
-      try {
-        await authenticatedFetch('/v1/SetTransmitted', {
+        const response = await fetch(authUrl, {
           method: 'POST',
-          body: JSON.stringify({ id: ticket.id, ticket_id: ticket.id, ticketId: ticket.id })
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            user_id: userId,
+            secret: secret,
+            service: "https://starpos.com/api"
+          }),
+          signal: controller.signal
         });
-        result.logs.push(`   -> Confirmado y marcado como transmitido en la API de StarPOS.`);
-      } catch (err: unknown) {
-        const msg = err instanceof Error ? err.message : String(err);
-        result.logs.push(`   ⚠️ Error al marcar ticket ${ticket.ticket_number} como transmitido: ${msg}`);
-      }
-    }
+        clearTimeout(timeoutId);
 
-    // Save final synchronized list
-    if (adminDb) {
-      await adminDb.collection('settings').doc('starpos_sync_state').set({ processedTicketIds: newProcessedTicketIds, lastSyncTime: new Date().toISOString() });
-    } else {
-      await setDoc(stateRef, { processedTicketIds: newProcessedTicketIds, lastSyncTime: new Date().toISOString() });
-    }
-
-    result.success = true;
-    result.logs.push(`🎉 Importación finalizada. Se procesaron ${newProcessedTicketIds.length - processedTicketIds.size} tickets nuevos y se redujo stock de ${stockUpdatedCount} artículos.`);
-  } catch (error: unknown) {
-    result.success = false;
-    const msg = error instanceof Error ? error.message : String(error);
-    result.logs.push(`❌ Error en sincronización de ventas y stock: ${msg}`);
-    console.error("syncSalesAndDiscountStock Error:", error);
-  }
-
-  return result;
-}
-
-export interface SyncStockResult {
-  success: boolean;
-  syncedCount: number;
-  logs: string[];
-}
-
-/**
- * 4) SINCRONIZACIÓN DE STOCK VÍA TICKETS
- *
- * NOTA: /v1/CurrentStock NO existe en la API oficial de StarPOS v1.3.
- * El stock se mantiene descontando desde los tickets (syncSalesAndDiscountStock).
- * Esta función se conserva por si el endpoint existe en una versión custom,
- * pero ahora falla con un mensaje claro en vez de explotar.
- */
-export async function syncStockFromStarPOS(): Promise<SyncStockResult> {
-  const result: SyncStockResult = {
-    success: false,
-    syncedCount: 0,
-    logs: []
-  };
-  const adminDb = getAdminDb();
-
-  try {
-    result.logs.push("Iniciando sincronización directa de stock desde StarPOS...");
-    await authenticateStarPOS();
-    result.logs.push("🔑 Conexión exitosa con la API de StarPOS.");
-
-    // Intentar /v1/CurrentStock — puede no existir en la API oficial
-    result.logs.push("Consultando /v1/CurrentStock...");
-    const response = await authenticatedFetch('/v1/CurrentStock');
-
-    if (!response.ok) {
-      // Si devuelve 404, el endpoint no existe — sugerir usar sync-sales
-      if (response.status === 404) {
-        result.logs.push("⚠️ El endpoint /v1/CurrentStock no existe en esta versión de StarPOS.");
-        result.logs.push("💡 Usá 'Sincronizar Ventas' en su lugar: importa los tickets y descuenta el stock automáticamente.");
-        result.success = false;
-        return result;
-      }
-      throw new Error(`Fallo al consultar stock actual (Status: ${response.status})`);
-    }
-
-    const currentStockData = await safeJsonParse<unknown>(response, '/v1/CurrentStock');
-
-    const stockArray = Array.isArray(currentStockData)
-      ? currentStockData
-      : (currentStockData && typeof currentStockData === 'object' && Array.isArray((currentStockData as Record<string, unknown>).payload))
-        ? (currentStockData as Record<string, unknown>).payload as unknown[]
-        : null;
-
-    if (!Array.isArray(stockArray)) {
-      throw new Error("El endpoint /v1/CurrentStock no retornó un array válido de stock.");
-    }
-
-    result.logs.push(`Recuperados ${stockArray.length} registros de stock de StarPOS.`);
-
-    // Read all products from Firestore
-    const productsSnap = await getDocs(collection(db, 'products'));
-    const currentProducts: Product[] = [];
-    productsSnap.forEach(docObj => {
-      currentProducts.push({ ...(docObj.data() as Product) });
-    });
-
-    let updatedCount = 0;
-
-    for (const stockItem of stockArray) {
-      if (!stockItem || typeof stockItem !== 'object') continue;
-      const si = stockItem as Record<string, unknown>;
-      const product = si.product as Record<string, unknown> | undefined;
-
-      const itemId = product?.id || product?.code || si.product_id || si.id || si.code;
-      const qty = typeof si.units === 'number' ? si.units
-        : typeof si.qty === 'number' ? si.qty
-        : typeof si.stock === 'number' ? si.stock
-        : typeof si.stockQty === 'number' ? si.stockQty
-        : null;
-
-      if (!itemId || qty === null) continue;
-
-      const matchedProduct = currentProducts.find(p =>
-        p.id.toString() === String(itemId) ||
-        p.codigoFacturador === String(itemId)
-      );
-
-      if (matchedProduct) {
-        const nextStock = Math.max(0, Number(qty));
-        const nextInStock = nextStock > 0;
-
-        if (adminDb) {
-          await adminDb.collection('products').doc(matchedProduct.id.toString()).update({
-            stockQty: nextStock,
-            inStock: nextInStock,
-          });
+        if (response.ok) {
+          let hasToken = false;
+          try {
+            const body = await response.json();
+            hasToken = !!(body && body.payload && body.payload.access_token);
+          } catch {
+            /* respuesta no-JSON */
+          }
+          if (hasToken) {
+            success = true;
+            errorType = "NINGUNO";
+            logs.push(`✅ Conexión y autenticación correctas (HTTP ${response.status}, token recibido).`);
+            infrastructureAdvice = "¡La conexión de red es correcta y las credenciales fueron aceptadas por StarPOS!";
+          } else {
+            errorType = "CREDENTIALS_OR_HTTP_ERROR";
+            details = `HTTP ${response.status} pero sin token de acceso en la respuesta.`;
+            logs.push(`⚠️ StarPOS respondió ${response.status} pero no devolvió token. Revisá STARPOS_USER_ID / STARPOS_SECRET.`);
+            infrastructureAdvice = "El servidor respondió pero no autenticó. Verificá que el usuario y el secret sean los correctos.";
+          }
         } else {
-          const productRef = doc(db, 'products', matchedProduct.id.toString());
-          await updateDoc(productRef, {
-            stockQty: nextStock,
-            inStock: nextInStock,
-          });
+          errorType = "CREDENTIALS_OR_HTTP_ERROR";
+          details = `Código de estado HTTP: ${response.status}`;
+          logs.push(`❌ El servidor remoto de StarPOS respondió con un error HTTP ${response.status}.`);
+          infrastructureAdvice = "El servidor de StarPOS físico está respondiendo, pero rechazó la autenticación. Verifique que STARPOS_USER_ID y STARPOS_SECRET sean correctos y coincidan con los de la terminal física.";
         }
-        updatedCount++;
-        result.logs.push(`   -> "${matchedProduct.name}" stock actualizado de forma directa a: ${nextStock}`);
-      } else {
-        result.logs.push(`   ⚠️ Ítem de stock sin producto en la tienda (código ${itemId}): se omite, no se crea automáticamente.`);
+      } catch (innerErr: unknown) {
+        clearTimeout(timeoutId);
+        const ie = innerErr instanceof Error ? innerErr : new Error(String(innerErr));
+        details = ie.message;
+
+        if (ie.name === 'AbortError' || ie.message?.toLowerCase().includes('timeout')) {
+          errorType = "TIMEOUT";
+          logs.push(`❌ Límite de tiempo excedido (Timeout). El servidor de StarPOS remoto no respondió en 4000ms.`);
+          infrastructureAdvice = `1. Asegúrese de que el servidor local de StarPOS está encendido y ejecutándose en la IP/Puerto indicados (${port}).\n2. Verifique que la red local tenga el puerto ${port} (estándar 8090) liberado y no esté bloqueado por un Firewall de Windows o antivirus.\n3. Confirme que la regla de NAT/Port Forwarding en el Router del comercio esté correctamente mapeando el tráfico externo al puerto de la terminal StarPOS física.`;
+        } else if ((ie as NodeJS.ErrnoException).code === 'ENOTFOUND' || ie.message?.toLowerCase().includes('dns') || ie.message?.toLowerCase().includes('getaddrinfo')) {
+          errorType = "DNS_ERROR";
+          logs.push(`❌ Error de resolución de nombre (DNS). No se pudo resolver el host '${host}'.`);
+          infrastructureAdvice = "1. Verifique que la URL de servicio de StarPOS configurada sea válida.\n2. Si utiliza un dominio dinámico (como No-IP o DynDNS), confirme que el cliente de actualización del router esté activo y reportando la IP pública correcta.";
+        } else if ((ie as NodeJS.ErrnoException).code === 'ECONNREFUSED' || ie.message?.toLowerCase().includes('refused') || ie.message?.toLowerCase().includes('fetch failed')) {
+          errorType = "CONNECTION_REFUSED";
+          logs.push(`❌ Conexión rechazada (Connection Refused). El servidor de StarPOS remoto está apagado o el puerto está cerrado.`);
+          infrastructureAdvice = `1. Verifique que el servicio del motor de integración StarPOS esté activado en la máquina host local.\n2. Confirme que la regla de cortafuegos (Firewall) permita tráfico entrante en el puerto ${port} (estándar 8090).\n3. Revise si el puerto cambió en el archivo de configuración del sistema de facturación local.`;
+        } else {
+          errorType = "NETWORK_ERROR";
+          logs.push(`❌ Error general de red: ${ie.message}`);
+          infrastructureAdvice = `1. Confirme que la conexión de internet del kiosco esté estable.\n2. Verifique la configuración del puerto 8090 en el Router del comercio y compruebe las exclusiones de cortafuegos.`;
+        }
       }
+    } catch (outerErr: unknown) {
+      const oe = outerErr instanceof Error ? outerErr : new Error(String(outerErr));
+      details = oe.message;
+      errorType = "PARSE_ERROR";
+      logs.push(`❌ Error al analizar la URL de configuración: ${oe.message}`);
+      infrastructureAdvice = "Verifique que STARPOS_SERVICE_URL sea una dirección web válida completa, incluyendo el protocolo (http:// o https://). Ejemplo: http://190.112.45.10:8090";
     }
 
-    result.syncedCount = updatedCount;
-    result.success = true;
-    result.logs.push(`🎉 Sincronización de stock finalizada con éxito. Se actualizaron ${updatedCount} artículos.`);
-  } catch (error: unknown) {
-    result.success = false;
-    const msg = error instanceof Error ? error.message : String(error);
-    result.logs.push(`❌ Error en sincronización directa de stock: ${msg}`);
-    console.error("syncStockFromStarPOS Error:", error);
-  }
+    return res.json({
+      success,
+      errorType,
+      message: success ? "Sincronizador operativo" : "Falla en canal de enlace StarPOS",
+      details,
+      infrastructureAdvice,
+      logs
+    });
+  });
 
-  return result;
+  // Manual catalog synchronization trigger
+  router.post("/sync-catalog", requireAdmin, async (req, res) => {
+    const { productsList } = req.body;
+    if (!productsList || !Array.isArray(productsList)) {
+      return res.status(400).json({ error: "Falta la lista de productos 'productsList'" });
+    }
+
+    const config = {
+      userId: process.env.STARPOS_USER_ID || "",
+      secret: process.env.STARPOS_SECRET || "",
+      serviceUrl: process.env.STARPOS_SERVICE_URL || ""
+    };
+
+    const isConfigured = !!config.userId && !!config.secret && !!config.serviceUrl;
+
+    if (!isConfigured) {
+      await new Promise(resolve => setTimeout(resolve, 1500));
+      return res.json({
+        success: true,
+        isDemo: true,
+        syncedCount: productsList.length,
+        logs: [
+          "Iniciando sincronización obligatoria de catálogo (MODO DEMO SIMULADO)...",
+          "🔑 [Simulado] Autenticación con StarPOS exitosa.",
+          "1/8 [Simulado] Creando Impuestos (/v1/Taxes) -> IVA 21%, IVA 10.5%, Exento.",
+          "2/8 [Simulado] Creando Listas de Precios (/v1/PriceList) -> Lista General.",
+          "3/8 [Simulado] Creando Categorías (/v1/Categories)...",
+          `✅ [Simulado] Se crearon las categorías correspondientes en el local.`,
+          "4/8 [Simulado] Creando Familias (/v1/Families) -> Familias jerárquicas vinculadas.",
+          "5/8 [Simulado] Creando Marcas (/v1/Brands) -> Marcas de góndola mapeadas.",
+          "6/8 [Simulado] Creando Catálogo de Productos con sub-colecciones (/Products)...",
+          `✅ [Simulado] ${productsList.length} productos con códigos de barra, impuestos, sucursales y precios enviados con éxito.`,
+          "7/8 [Simulado] Creando Métodos de Pago (/v1/PaymentMethods) -> Efectivo, Tarjeta, Transferencia.",
+          "8/8 [Simulado] Registrando Planes (/v1/Plans) -> Financiación StarPOS registrada.",
+          "🎉 ¡[Simulado] La sincronización obligatoria del catálogo en StarPOS se completó con éxito absoluto!"
+        ]
+      });
+    }
+
+    try {
+      const report = await syncCatalogToStarPOS(productsList);
+      return res.json(report);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return res.status(502).json({
+        success: false,
+        error: msg || "Error al sincronizar catálogo con StarPOS"
+      });
+    }
+  });
+
+  // Fetch sales and sync stock trigger
+  router.post("/sync-sales", requireAdmin, async (req, res) => {
+    const { productsList } = req.body;
+
+    const config = {
+      userId: process.env.STARPOS_USER_ID || "",
+      secret: process.env.STARPOS_SECRET || "",
+      serviceUrl: process.env.STARPOS_SERVICE_URL || ""
+    };
+
+    const isConfigured = !!config.userId && !!config.secret && !!config.serviceUrl;
+
+    if (!isConfigured) {
+      await new Promise(resolve => setTimeout(resolve, 1200));
+
+      const mockReductions = [
+        { productName: "Queso Cremoso x100g", sku: "SKU-QUESO-CREMOSO", qty: 2 },
+        { productName: "Coca-Cola 500ml", sku: "SKU-COCA-500", qty: 5 },
+        { productName: "Alfajor Triple Milka", sku: "SKU-ALFAJOR-TRIPLE", qty: 3 }
+      ];
+
+      try {
+        const { getDocs, collection, doc, updateDoc } = await import("firebase/firestore");
+        const snap = await getDocs(collection(firestoreDb, 'products'));
+        let count = 0;
+        for (const docObj of snap.docs) {
+          const p = docObj.data();
+          if (p.name.toLowerCase().includes("queso") || p.name.toLowerCase().includes("coca") || p.name.toLowerCase().includes("alfajor")) {
+            const currentStock = p.stockQty !== undefined ? p.stockQty : 15;
+            const nextStock = Math.max(0, currentStock - 2);
+            await updateDoc(doc(firestoreDb, 'products', docObj.id), {
+              stockQty: nextStock,
+              inStock: nextStock > 0
+            });
+            count++;
+          }
+        }
+        console.log(`[Demo Sync] Decremented stock of ${count} matching demo products in Firestore.`);
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        console.warn("Could not decrement demo stock in firestore:", msg);
+      }
+
+      try {
+        const { doc, setDoc } = await import("firebase/firestore");
+        const demoTicketId = `DEMO-TX-${Date.now()}`;
+        await setDoc(doc(firestoreDb, 'starpos_imported_sales', demoTicketId), {
+          id: demoTicketId,
+          ticket_number: `T001-${Math.floor(1000 + Math.random() * 9000)}`,
+          timestamp: new Date().toISOString(),
+          ticket_lines: [
+            { id: "line_1", product_id: "SKU-QUESO-CREMOSO", product_name: "Queso Cremoso x100g", qty: 2, price: 500, subtotal: 1000 },
+            { id: "line_2", product_id: "SKU-COCA-500", product_name: "Coca-Cola 500ml", qty: 5, price: 1500, subtotal: 7500 }
+          ],
+          tax_lines: [
+            { tax_id: "tax_iva_21", amount: 1785 }
+          ],
+          payments: [
+            { payment_method_id: "pay_cash", amount: 8500 }
+          ],
+          subtotal: 8500,
+          total: 8500,
+          importedAt: new Date().toISOString()
+        });
+      } catch (e: unknown) {
+        const msg = e instanceof Error ? e.message : String(e);
+        console.warn("Could not write demo ticket to Firestore:", msg);
+      }
+
+      return res.json({
+        success: true,
+        ticketsFetched: 3,
+        closedCashFetched: 1,
+        stockReductions: mockReductions,
+        logs: [
+          "Iniciando importación de ventas de StarPOS (MODO DEMO SIMULADO)...",
+          "🔑 [Simulado] Conectado con la API de StarPOS.",
+          "Consultando /v1/Tickets...",
+          "Recuperados 3 comprobantes de venta pendientes de sincronizar.",
+          "Consultando /v1/ClosedCash...",
+          "Recuperados 1 cierres de caja del local.",
+          "Procesando ticket nro: T001-4921 (Total: $8.500)...",
+          "   -> Descontado \"Queso Cremoso x100g\" x2. Nuevo stock: 13",
+          "   -> Descontado \"Coca-Cola 500ml\" x5. Nuevo stock: 80",
+          "Procesando ticket nro: T001-4922 (Total: $4.500)...",
+          "   -> Descontado \"Alfajor Triple Milka\" x3. Nuevo stock: 15",
+          "🎉 [Simulado] Importación finalizada con éxito. Stock de la tienda sincronizado con el local físico."
+        ]
+      });
+    }
+
+    try {
+      // Leer productos frescos de Firestore si no vienen del frontend
+      let products = productsList;
+      if (!products || !Array.isArray(products) || products.length === 0) {
+        const { getDocs, collection } = await import("firebase/firestore");
+        const snap = await getDocs(collection(firestoreDb, 'products'));
+        products = [];
+        snap.forEach(d => products.push({ id: d.id, ...d.data() }));
+      }
+      const result = await syncSalesAndDiscountStock(products);
+      return res.json(result);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error("[StarPOS] sync-sales error:", err);
+      return res.status(502).json({
+        success: false,
+        error: msg || "Error al sincronizar ventas con StarPOS",
+        logs: [`❌ ${msg}`]
+      });
+    }
+  });
+
+  // Direct stock synchronization
+  router.post("/sync-stock", requireAdmin, async (req, res) => {
+    const config = {
+      userId: process.env.STARPOS_USER_ID || "",
+      secret: process.env.STARPOS_SECRET || "",
+      serviceUrl: process.env.STARPOS_SERVICE_URL || ""
+    };
+
+    const isConfigured = !!config.userId && !!config.secret && !!config.serviceUrl;
+
+    if (!isConfigured) {
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      return res.json({
+        success: true,
+        syncedCount: 5,
+        logs: [
+          "Iniciando sincronización directa de stock desde StarPOS (MODO DEMO SIMULADO)...",
+          "🔑 [Simulado] Conectado con la API de StarPOS.",
+          "Consultando /v1/CurrentStock...",
+          "Recuperados 5 registros de stock desde StarPOS.",
+          "   -> \"Queso Cremoso x100g\" stock actualizado de forma directa a: 15",
+          "   -> \"Coca-Cola 500ml\" stock actualizado de forma directa a: 80",
+          "   -> \"Alfajor Triple Milka\" stock actualizado de forma directa a: 15",
+          "🎉 [Simulado] Sincronización directa de stock finalizada con éxito."
+        ]
+      });
+    }
+
+    try {
+      const result = await syncStockFromStarPOS();
+      return res.json(result);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return res.status(502).json({
+        success: false,
+        error: msg || "Error al sincronizar stock con StarPOS"
+      });
+    }
+  });
+
+  // Pull prices from StarPOS into Firestore
+  router.post("/pull-prices", requireAdmin, async (req, res) => {
+    const config = {
+      userId: process.env.STARPOS_USER_ID || "",
+      secret: process.env.STARPOS_SECRET || "",
+      serviceUrl: process.env.STARPOS_SERVICE_URL || ""
+    };
+
+    const isConfigured = !!config.userId && !!config.secret && !!config.serviceUrl;
+
+    if (!isConfigured) {
+      await new Promise(resolve => setTimeout(resolve, 800));
+      return res.json({
+        success: true,
+        updatedCount: 3,
+        skippedCount: 0,
+        logs: [
+          "Iniciando sincronización de precios (MODO DEMO SIMULADO)...",
+          "🔑 [Simulado] Conectado con la API de StarPOS.",
+          "Consultando /v1/Products...",
+          "Recuperados 45 productos de StarPOS.",
+          '   -> "Coca-Cola 500ml": $1500 → $1800',
+          '   -> "Pan Lactal Bimbo": $2200 → $2450',
+          '   -> "Yerba Mate 1kg": $5500 → $6200',
+          "🎉 [Simulado] Sincronización de precios finalizada. Se actualizaron 3 precios."
+        ]
+      });
+    }
+
+    try {
+      const result = await syncPricesFromStarPOS();
+      return res.json(result);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error("[StarPOS] pull-prices error:", err);
+      return res.status(502).json({
+        success: false,
+        error: msg || "Error al sincronizar precios desde StarPOS",
+        logs: [`❌ ${msg}`]
+      });
+    }
+  });
+
+  // Full daily sync: prices + sales/stock in one call
+  router.post("/full-sync", requireAdmin, async (req, res) => {
+    const config = {
+      userId: process.env.STARPOS_USER_ID || "",
+      secret: process.env.STARPOS_SECRET || "",
+      serviceUrl: process.env.STARPOS_SERVICE_URL || ""
+    };
+
+    const isConfigured = !!config.userId && !!config.secret && !!config.serviceUrl;
+
+    if (!isConfigured) {
+      await new Promise(resolve => setTimeout(resolve, 1500));
+      return res.json({
+        success: true,
+        prices: { success: true, updatedCount: 3, skippedCount: 0, logs: ["[Demo] Precios sincronizados."] },
+        sales: { success: true, ticketsFetched: 2, closedCashFetched: 1, stockReductions: [], logs: ["[Demo] Ventas importadas."] },
+        logs: ["=== SINCRONIZACIÓN COMPLETA DEMO ===", "Precios y stock actualizados en modo demo."]
+      });
+    }
+
+    try {
+      const { getDocs, collection } = await import("firebase/firestore");
+      const snap = await getDocs(collection(firestoreDb, 'products'));
+      const products: Record<string, unknown>[] = [];
+      snap.forEach(d => products.push({ id: d.id, ...d.data() }));
+
+      const result = await fullDailySync(products as any[]);
+      return res.json(result);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.error("[StarPOS] full-sync error:", err);
+      return res.status(502).json({
+        success: false,
+        error: msg || "Error en sincronización completa",
+        logs: [`❌ ${msg}`]
+      });
+    }
+  });
+
+  // Get imported StarPOS tickets for AdminPanel display
+  router.get("/sales", requireAdmin, async (req, res) => {
+    const adminDb = getAdminFirestore();
+    if (!adminDb) {
+      console.warn("[StarPOS] Sin FIREBASE_SERVICE_ACCOUNT_JSON: no se pueden leer las ventas importadas.");
+      return res.json({ success: true, sales: [], degraded: true });
+    }
+
+    try {
+      const snap = await adminDb
+        .collection("starpos_imported_sales")
+        .orderBy("importedAt", "desc")
+        .limit(20)
+        .get();
+      const list: Record<string, unknown>[] = [];
+      snap.forEach(docObj => {
+        list.push({ id: docObj.id, ...docObj.data() });
+      });
+      return res.json({ success: true, sales: list });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      console.warn("[StarPOS] No se pudo consultar starpos_imported_sales:", msg);
+      return res.json({ success: true, sales: [], degraded: true });
+    }
+  });
+
+  return router;
 }
