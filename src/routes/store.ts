@@ -14,7 +14,6 @@ const freeShippingLimiter = rateLimit({
 export function storeRoutes(): Router {
   const router = Router();
 
-  // Envio gratis para el PRIMER pedido del dia de TODA la tienda.
   router.get("/free-shipping-status", freeShippingLimiter, async (_req, res) => {
     try {
       const adminDb = getAdminFirestore();
@@ -34,7 +33,40 @@ export function storeRoutes(): Router {
 
       return res.json({ available: snap.empty });
     } catch (e: any) {
-      console.warn("[FreeShipping] no se pudo consultar:",
+      console.warn("[FreeShipping] no se pudo consultar:", e.message);
+      return res.json({ available: false });
+    }
+  });
+
+  router.get("/export-products", async (req, res) => {
+    const token = req.query.token;
+    const expected = process.env.CRON_SECRET_TOKEN;
+    if (!expected || token !== expected) {
+      return res.status(401).json({ error: "Token inválido" });
+    }
+    try {
+      const adminDb = getAdminFirestore();
+      if (!adminDb) return res.status(500).json({ error: "Firebase Admin no configurado" });
+
+      const snap = await adminDb.collection("products").get();
+      const products: any[] = [];
+      snap.forEach((doc: any) => {
+        const d = doc.data();
+        products.push({
+          id: doc.id,
+          name: d.name || "",
+          barcode: d.barcode || "",
+          price: d.price || 0,
+          category: d.category || "",
+          stockQty: d.stockQty ?? null,
+          imageUrl: d.imageUrl || ""
+        });
+      });
+      return res.json({ total: products.length, products });
+    } catch (e: any) {
+      return res.status(500).json({ error: e.message });
+    }
+  });
 
   return router;
 }
