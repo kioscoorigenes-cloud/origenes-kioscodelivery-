@@ -1,6 +1,7 @@
 import { doc, getDoc, getDocs, updateDoc, collection, setDoc } from 'firebase/firestore';
 import { initializeApp as initAdminApp, getApps as getAdminApps, cert } from 'firebase-admin/app';
 import { getFirestore as getAdminFirestoreInstance, Firestore as AdminFirestore } from 'firebase-admin/firestore';
+import firebaseConfig from '../../firebase-applet-config.json';
 
 let adminDbInstance: AdminFirestore | null = null;
 function getAdminDb(): AdminFirestore | null {
@@ -11,7 +12,7 @@ function getAdminDb(): AdminFirestore | null {
     const serviceAccount = JSON.parse(raw);
     const apps = getAdminApps();
     const app = apps.length > 0 ? apps[0] : initAdminApp({ credential: cert(serviceAccount) });
-    adminDbInstance = getAdminFirestoreInstance(app, 'ai-studio-b0577a6e-0f03-46cd-a014-1334f40913ad');
+    adminDbInstance = getAdminFirestoreInstance(app, firebaseConfig.firestoreDatabaseId);
     return adminDbInstance;
   } catch (e) {
     console.error('Failed to initialize firebase-admin:', e);
@@ -662,7 +663,7 @@ export async function syncSalesAndDiscountStock(firestoreProducts: Product[]): P
         );
 
         if (matchedProduct) {
-          const knownStock = (matchedProduct as Record<string, unknown>).stockQty;
+          const knownStock = (matchedProduct as unknown as Record<string, unknown>).stockQty;
           if (typeof knownStock !== 'number') {
             result.logs.push(`   ⚠️ "${matchedProduct.name}": stock desconocido, no se descuenta (cargá el stock real primero).`);
             continue;
@@ -869,200 +870,165 @@ export async function syncStockFromStarPOS(): Promise<SyncStockResult> {
 }
 
 /**
- * 5) SINCRONIZACIÓN DE PRECIOS DESDE STARPOS → FIRESTORE
+ * 5) SINCRONIZACIÓN DE PRECIOS DESDE StarPOS
  *
- * Lee los productos de StarPOS vía GET /v1/Products y actualiza los precios
- * en Firestore para que la tienda online refleje los precios del local físico.
+ * Usa GET /v1/Products para traer todos los productos de StarPOS con sus
+ * precios (products_prices[].price_sell) y actualiza los precios en Firestore
+ * para los productos que ya existen (match por ID).
+ *
+ * Solo toca el campo `price` — nunca borra fotos, nombre, categoría ni nada más.
  */
 export interface SyncPricesResult {
   success: boolean;
+  totalFetched: number;
   updatedCount: number;
   skippedCount: number;
   logs: string[];
 }
 
-export async function syncPricesFromStarPOS(): Promise<SyncPricesResult> {
+export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
   const result: SyncPricesResult = {
     success: false,
+    totalFetched: 0,
     updatedCount: 0,
     skippedCount: 0,
     logs: []
   };
+
   const adminDb = getAdminDb();
 
   try {
     result.logs.push("Iniciando sincronización de precios desde StarPOS...");
+
     await authenticateStarPOS();
     result.logs.push("🔑 Conexión exitosa con la API de StarPOS.");
 
-    // Leer productos de StarPOS
-    result.logs.push("Consultando /v1/Products...");
+    // Traer productos de StarPOS
+    result.logs.push("Consultando GET /v1/Products...");
     const response = await authenticatedFetch('/v1/Products');
 
     if (!response.ok) {
-      throw new Error(`Fallo al consultar productos de StarPOS (Status: ${response.status})`);
+      throw new Error(`Fallo al consultar productos (Status: ${response.status})`);
     }
 
     const data = await safeJsonParse<unknown>(response, '/v1/Products');
 
-    // Extraer array de productos — la API puede devolver un array directo o un objeto con payload
+    // La API puede devolver un array directo o un objeto con payload/data/Products
     let starposProducts: StarPOSProduct[];
     if (Array.isArray(data)) {
       starposProducts = data;
     } else if (data && typeof data === 'object') {
       const d = data as Record<string, unknown>;
-      const arr = d?.Products || d?.products || d?.payload || d?.data || d?.items;
-      if (Array.isArray(arr)) {
-        starposProducts = arr;
-      } else {
-        throw new Error("La respuesta de /v1/Products no contiene un array de productos.");
-      }
+      const candidates = d.Products || d.products || d.payload || d.data || d.items;
+      starposProducts = Array.isArray(candidates) ? candidates as StarPOSProduct[] : [];
     } else {
-      throw new Error("Respuesta inesperada de /v1/Products.");
+      starposProducts = [];
     }
 
+    result.totalFetched = starposProducts.length;
     result.logs.push(`Recuperados ${starposProducts.length} productos de StarPOS.`);
 
-    // Leer productos actuales de Firestore
-    const productsSnap = await getDocs(collection(db, 'products'));
-    const currentProducts: (Product & { docId: string })[] = [];
-    productsSnap.forEach(docSnap => {
-      currentProducts.push({ ...(docSnap.data() as Product), docId: docSnap.id });
-    });
-    result.logs.push(`Productos en la tienda online: ${currentProducts.length}`);
+    if (starposProducts.length === 0) {
+      result.logs.push("⚠️ No se recibieron productos. Verificá que GET /v1/Products esté habilitado.");
+      return result;
+    }
 
+    // Construir mapa StarPOS ID → precio de venta
+    const priceMap = new Map<string, number>();
+    for (const sp of starposProducts) {
+      if (!sp || !sp.id) continue;
+      const id = String(sp.id);
+
+      // Buscar precio en products_prices (price_sell de la primera lista activa)
+      let price: number | null = null;
+      if (Array.isArray(sp.products_prices)) {
+        for (const pp of sp.products_prices) {
+          if (typeof pp.price_sell === 'number' && pp.price_sell > 0) {
+            price = pp.price_sell;
+            break;
+          }
+          if (typeof pp.price === 'number' && pp.price > 0 && price === null) {
+            price = pp.price;
+          }
+        }
+      }
+
+      if (price !== null && price > 0) {
+        priceMap.set(id, price);
+      }
+    }
+
+    result.logs.push(`${priceMap.size} productos con precio válido en StarPOS.`);
+
+    // Leer productos de Firestore
+    result.logs.push("Leyendo productos de Firestore...");
+    let firestoreProducts: { id: string; price: number }[] = [];
+
+    if (adminDb) {
+      const snap = await adminDb.collection('products').get();
+      snap.forEach((docSnap: FirebaseFirestore.QueryDocumentSnapshot) => {
+        const d = docSnap.data();
+        firestoreProducts.push({ id: docSnap.id, price: d.price || 0 });
+      });
+    } else {
+      const snap = await getDocs(collection(db, 'products'));
+      snap.forEach(docSnap => {
+        const d = docSnap.data();
+        firestoreProducts.push({ id: docSnap.id, price: d.price || 0 });
+      });
+    }
+
+    result.logs.push(`${firestoreProducts.length} productos en Firestore.`);
+
+    // Actualizar precios donde haya diferencia
     let updatedCount = 0;
     let skippedCount = 0;
 
-    for (const sp of starposProducts) {
-      if (!sp || !sp.id) continue;
+    for (const fp of firestoreProducts) {
+      const starposPrice = priceMap.get(fp.id);
 
-      // Extraer precio de venta del producto StarPOS
-      let priceSell: number | null = null;
-
-      // Primero buscar en ofertas activas
-      if (Array.isArray(sp.products_price_offers)) {
-        const activeOffer = sp.products_price_offers.find(o => o.active);
-        if (activeOffer) {
-          priceSell = activeOffer.price_sell ?? activeOffer.price ?? null;
-        }
-      }
-
-      // Si no hay oferta activa, buscar en la lista de precios
-      if (priceSell === null && Array.isArray(sp.products_prices)) {
-        for (const pp of sp.products_prices) {
-          if (pp.price_sell != null) {
-            priceSell = pp.price_sell;
-            break;
-          }
-          if (pp.price != null) {
-            priceSell = pp.price;
-            break;
-          }
-        }
-      }
-
-      if (priceSell === null || priceSell <= 0) {
+      if (starposPrice === undefined) {
+        // Producto no está en StarPOS (puede ser manual con ID largo tipo 178xxx)
         skippedCount++;
         continue;
       }
 
-      // Buscar producto correspondiente en Firestore por código o nombre
-      const spCodes = Array.isArray(sp.products_codes)
-        ? sp.products_codes.map(c => c.code).filter(Boolean)
-        : [];
-
-      const matched = currentProducts.find(p => {
-        // Match por ID directo
-        if (p.id.toString() === sp.id) return true;
-        // Match por código de facturador
-        if (p.codigoFacturador && spCodes.includes(p.codigoFacturador)) return true;
-        if (p.codigoFacturador && p.codigoFacturador === sp.id) return true;
-        // Match por nombre exacto (case-insensitive)
-        if (p.name && sp.name && p.name.toLowerCase().trim() === sp.name.toLowerCase().trim()) return true;
-        return false;
-      });
-
-      if (!matched) {
+      // Solo actualizar si el precio cambió
+      if (Math.abs(starposPrice - fp.price) < 0.01) {
         skippedCount++;
         continue;
       }
 
-      // Comparar precio actual vs nuevo
-      const currentPrice = (matched as Record<string, unknown>).price as number | undefined;
-      if (currentPrice === priceSell) {
-        continue;
-      }
-
-      // Actualizar precio en Firestore
-      const updateData: Record<string, unknown> = {
-        price: priceSell,
-        lastPriceSync: new Date().toISOString()
-      };
-
-      // Si hay oferta activa, guardar el precio base como "orig"
-      if (Array.isArray(sp.products_price_offers)) {
-        const activeOffer = sp.products_price_offers.find(o => o.active);
-        if (activeOffer && Array.isArray(sp.products_prices) && sp.products_prices.length > 0) {
-          const basePrice = sp.products_prices[0]?.price_sell ?? sp.products_prices[0]?.price;
-          if (basePrice && basePrice > priceSell) {
-            updateData.orig = basePrice;
-          }
-        }
-      }
-
+      // Actualizar SOLO el precio — no tocar nada más (fotos, nombre, categoría, stock)
       if (adminDb) {
-        await adminDb.collection('products').doc(matched.docId).update(updateData);
+        await adminDb.collection('products').doc(fp.id).update({
+          price: starposPrice
+        });
       } else {
-        const productRef = doc(db, 'products', matched.docId);
-        await updateDoc(productRef, updateData);
+        const productRef = doc(db, 'products', fp.id);
+        await updateDoc(productRef, { price: starposPrice });
       }
 
-      const oldPriceStr = currentPrice != null ? `$${currentPrice}` : 'sin precio';
-      result.logs.push(`   -> "${matched.name}": ${oldPriceStr} → $${priceSell}`);
       updatedCount++;
+      if (updatedCount <= 20) {
+        result.logs.push(`   -> "${fp.id}": $${fp.price} → $${starposPrice}`);
+      }
+    }
+
+    if (updatedCount > 20) {
+      result.logs.push(`   ... y ${updatedCount - 20} productos más.`);
     }
 
     result.updatedCount = updatedCount;
     result.skippedCount = skippedCount;
     result.success = true;
-    result.logs.push(`🎉 Sincronización de precios finalizada. Se actualizaron ${updatedCount} precios. ${skippedCount} productos de StarPOS sin match en la tienda.`);
+    result.logs.push(`🎉 Sincronización de precios finalizada. Actualizados: ${updatedCount}, sin cambio: ${skippedCount}.`);
   } catch (error: unknown) {
     result.success = false;
     const msg = error instanceof Error ? error.message : String(error);
     result.logs.push(`❌ Error en sincronización de precios: ${msg}`);
-    console.error("syncPricesFromStarPOS Error:", error);
+    console.error("pullPricesFromStarPOS Error:", error);
   }
 
   return result;
-}
-
-/**
- * 6) SINCRONIZACIÓN COMPLETA DIARIA (precios + ventas/stock)
- */
-export interface FullSyncResult {
-  success: boolean;
-  prices: SyncPricesResult;
-  sales: SyncSalesResult;
-  logs: string[];
-}
-
-export async function fullDailySync(firestoreProducts: Product[]): Promise<FullSyncResult> {
-  const logs: string[] = [];
-  logs.push(`=== SINCRONIZACIÓN COMPLETA — ${new Date().toLocaleString('es-AR', { timeZone: 'America/Argentina/Ushuaia' })} ===`);
-
-  logs.push("\n--- PASO 1: Sincronizar precios desde StarPOS ---");
-  const pricesResult = await syncPricesFromStarPOS();
-  logs.push(...pricesResult.logs);
-
-  logs.push("\n--- PASO 2: Importar ventas y descontar stock ---");
-  const salesResult = await syncSalesAndDiscountStock(firestoreProducts);
-  logs.push(...salesResult.logs);
-
-  return {
-    success: pricesResult.success || salesResult.success,
-    prices: pricesResult,
-    sales: salesResult,
-    logs
-  };
 }

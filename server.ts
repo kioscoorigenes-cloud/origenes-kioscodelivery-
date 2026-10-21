@@ -81,6 +81,11 @@ async function startServer() {
 
   app.use(express.json({ limit: '1mb' }));
 
+  // ── Health check (Railway, uptime monitors, etc.) ──────────────────
+  app.get('/health', (_req, res) => {
+    res.json({ status: 'ok', timestamp: new Date().toISOString() });
+  });
+
   // ── Rutas por dominio ───────────────────────────────────────────────
   app.use('/api/ai', aiRoutes());
   app.use('/api/facturador', facturadorRoutes());

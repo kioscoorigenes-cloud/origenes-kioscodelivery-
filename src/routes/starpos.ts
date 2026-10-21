@@ -6,8 +6,7 @@ import {
   syncCatalogToStarPOS,
   syncSalesAndDiscountStock,
   syncStockFromStarPOS,
-  syncPricesFromStarPOS,
-  fullDailySync
+  pullPricesFromStarPOS
 } from "../services/starpos";
 import { requireAdmin, getAdminFirestore } from "../services/serverAuth";
 
@@ -395,84 +394,85 @@ export function starposRoutes({ firestoreDb }: { firestoreDb: Firestore }): Rout
     }
   });
 
-  // Pull prices from StarPOS into Firestore
-  router.post("/pull-prices", requireAdmin, async (req, res) => {
-    const config = {
-      userId: process.env.STARPOS_USER_ID || "",
-      secret: process.env.STARPOS_SECRET || "",
-      serviceUrl: process.env.STARPOS_SERVICE_URL || ""
-    };
-
-    const isConfigured = !!config.userId && !!config.secret && !!config.serviceUrl;
-
-    if (!isConfigured) {
-      await new Promise(resolve => setTimeout(resolve, 800));
-      return res.json({
-        success: true,
-        updatedCount: 3,
-        skippedCount: 0,
-        logs: [
-          "Iniciando sincronización de precios (MODO DEMO SIMULADO)...",
-          "🔑 [Simulado] Conectado con la API de StarPOS.",
-          "Consultando /v1/Products...",
-          "Recuperados 45 productos de StarPOS.",
-          '   -> "Coca-Cola 500ml": $1500 → $1800',
-          '   -> "Pan Lactal Bimbo": $2200 → $2450',
-          '   -> "Yerba Mate 1kg": $5500 → $6200',
-          "🎉 [Simulado] Sincronización de precios finalizada. Se actualizaron 3 precios."
-        ]
-      });
-    }
-
+  // Sincronizar PRECIOS desde StarPOS → Firestore
+  // Usa GET /v1/Products para traer precios y actualizar los productos existentes.
+  // Solo toca el campo price, nunca borra fotos ni datos.
+  router.post("/pull-prices", requireAdmin, async (_req, res) => {
     try {
-      const result = await syncPricesFromStarPOS();
+      const result = await pullPricesFromStarPOS();
       return res.json(result);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      console.error("[StarPOS] pull-prices error:", err);
       return res.status(502).json({
         success: false,
-        error: msg || "Error al sincronizar precios desde StarPOS",
-        logs: [`❌ ${msg}`]
+        error: msg || "Error al sincronizar precios con StarPOS"
       });
     }
   });
 
-  // Full daily sync: prices + sales/stock in one call
-  router.post("/full-sync", requireAdmin, async (req, res) => {
+  // ==========================================
+  // AUTO-SYNC DIARIO (llamado por cron/scheduled task)
+  // Protegido por token secreto en lugar de auth de admin
+  // ==========================================
+  router.post("/auto-sync", async (req, res) => {
+    const token = req.headers["x-cron-token"] || req.query.token;
+    const expected = process.env.CRON_SECRET_TOKEN;
+
+    if (!expected || token !== expected) {
+      return res.status(401).json({ success: false, error: "Token inválido" });
+    }
+
     const config = {
       userId: process.env.STARPOS_USER_ID || "",
       secret: process.env.STARPOS_SECRET || "",
       serviceUrl: process.env.STARPOS_SERVICE_URL || ""
     };
 
-    const isConfigured = !!config.userId && !!config.secret && !!config.serviceUrl;
-
-    if (!isConfigured) {
-      await new Promise(resolve => setTimeout(resolve, 1500));
-      return res.json({
-        success: true,
-        prices: { success: true, updatedCount: 3, skippedCount: 0, logs: ["[Demo] Precios sincronizados."] },
-        sales: { success: true, ticketsFetched: 2, closedCashFetched: 1, stockReductions: [], logs: ["[Demo] Ventas importadas."] },
-        logs: ["=== SINCRONIZACIÓN COMPLETA DEMO ===", "Precios y stock actualizados en modo demo."]
-      });
+    if (!config.userId || !config.secret || !config.serviceUrl) {
+      return res.json({ success: false, error: "StarPOS no configurado" });
     }
 
     try {
-      const { getDocs, collection } = await import("firebase/firestore");
-      const snap = await getDocs(collection(firestoreDb, 'products'));
+      // Leer productos de Firestore
+      const adminDb = getAdminFirestore();
+      if (!adminDb) {
+        return res.status(500).json({ success: false, error: "Firebase admin no disponible" });
+      }
+
+      const snap = await adminDb.collection("products").get();
       const products: Record<string, unknown>[] = [];
       snap.forEach(d => products.push({ id: d.id, ...d.data() }));
 
-      const result = await fullDailySync(products as any[]);
-      return res.json(result);
+      // 1. Sync ventas y descontar stock
+      const salesResult = await syncSalesAndDiscountStock(products as any[]);
+
+      // 2. Sync precios desde StarPOS
+      let pricesResult: { success: boolean; updatedCount: number; logs: string[] } = {
+        success: false, updatedCount: 0, logs: []
+      };
+      try {
+        pricesResult = await pullPricesFromStarPOS();
+      } catch (priceErr: unknown) {
+        const pmsg = priceErr instanceof Error ? priceErr.message : String(priceErr);
+        pricesResult.logs.push(`⚠️ Error al sincronizar precios: ${pmsg}`);
+      }
+
+      return res.json({
+        success: salesResult.success,
+        timestamp: new Date().toISOString(),
+        ticketsFetched: salesResult.ticketsFetched,
+        closedCashFetched: salesResult.closedCashFetched,
+        stockReductions: salesResult.stockReductions.length,
+        pricesUpdated: pricesResult.updatedCount,
+        logs: [...salesResult.logs, "---", ...pricesResult.logs]
+      });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      console.error("[StarPOS] full-sync error:", err);
+      console.error("[StarPOS] auto-sync error:", err);
       return res.status(502).json({
         success: false,
-        error: msg || "Error en sincronización completa",
-        logs: [`❌ ${msg}`]
+        error: msg || "Error en auto-sync",
+        timestamp: new Date().toISOString()
       });
     }
   });

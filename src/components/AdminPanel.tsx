@@ -476,7 +476,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           message: `El catálogo se ha sincronizado correctamente en el orden obligatorio. Se enviaron ${data.syncedCount || products.length} artículos.`
         });
       } else {
-        const errMsg = data.error || data.message || (Array.isArray(data.logs) && data.logs[data.logs.length - 1]) || "Error desconocido";
+        const errMsg = data.error || data.message || (Array.isArray(data.logs) && data.logs[data.logs.length - 1]) || "No se pudo conectar con StarPOS. Verificá que la PC del local esté encendida y conectada.";
         setStarposLogs(prev => [...prev, `❌ Error: ${errMsg}`]);
         setCustomAlert({
           title: "Fallo en Sincronización",
@@ -522,7 +522,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         });
         loadStarposSales();
       } else {
-        const errMsg = data.error || data.message || "Error desconocido";
+        const errMsg = data.error || data.message || "No se pudo conectar con StarPOS. Verificá que la PC del local esté encendida y conectada.";
         setStarposLogs(prev => [...prev, `❌ Error: ${errMsg}`]);
         setCustomAlert({
           title: "Fallo en Sincronización",
@@ -558,7 +558,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           message: `Sincronización directa de stock finalizada con éxito. Se actualizaron ${data.syncedCount || 0} productos vinculados.`
         });
       } else {
-        const errMsg = data.error || data.message || "Error desconocido";
+        const errMsg = data.error || data.message || "No se pudo conectar con StarPOS. Verificá que la PC del local esté encendida y conectada.";
         setStarposLogs(prev => [...prev, `❌ Error: ${errMsg}`]);
         setCustomAlert({
           title: "Fallo en Sincronización de Stock",
