@@ -603,16 +603,29 @@ export async function syncSalesAndDiscountStock(firestoreProducts: Product[]): P
     await authenticateStarPOS();
     result.logs.push("🔑 Conectado con la API de StarPOS.");
 
-    // Fetch Tickets and Closed Cash
+    // Fetch Tickets and Closed Cash (tolerante a fallos)
+    let tickets: StarPOSTicket[] = [];
+    let closedCash: StarPOSClosedCash[] = [];
+
     result.logs.push("Consultando /v1/Tickets...");
-    const tickets = await getStarPOSTickets();
-    result.ticketsFetched = tickets.length;
-    result.logs.push(`Recuperados ${tickets.length} comprobantes de venta.`);
+    try {
+      tickets = await getStarPOSTickets();
+      result.ticketsFetched = tickets.length;
+      result.logs.push(`Recuperados ${tickets.length} comprobantes de venta.`);
+    } catch (ticketErr: unknown) {
+      const tmsg = ticketErr instanceof Error ? ticketErr.message : String(ticketErr);
+      result.logs.push(`⚠️ No se pudieron obtener tickets: ${tmsg}. Continuando sin importar ventas.`);
+    }
 
     result.logs.push("Consultando /v1/ClosedCash...");
-    const closedCash = await getStarPOSClosedCash();
-    result.closedCashFetched = closedCash.length;
-    result.logs.push(`Recuperados ${closedCash.length} cierres de caja.`);
+    try {
+      closedCash = await getStarPOSClosedCash();
+      result.closedCashFetched = closedCash.length;
+      result.logs.push(`Recuperados ${closedCash.length} cierres de caja.`);
+    } catch (cashErr: unknown) {
+      const cmsg = cashErr instanceof Error ? cashErr.message : String(cashErr);
+      result.logs.push(`⚠️ No se pudieron obtener cierres de caja: ${cmsg}. Continuando.`);
+    }
 
     // Fetch synced state from firestore to prevent double discounting
     const adminDb = getAdminDb();
@@ -983,18 +996,21 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
     // Actualizar precios donde haya diferencia
     let updatedCount = 0;
     let skippedCount = 0;
+    let noMatchCount = 0;
+    let samePrice = 0;
 
     for (const fp of firestoreProducts) {
       const starposPrice = priceMap.get(fp.id);
 
       if (starposPrice === undefined) {
         // Producto no está en StarPOS (puede ser manual con ID largo tipo 178xxx)
-        skippedCount++;
+        noMatchCount++;
         continue;
       }
 
       // Solo actualizar si el precio cambió
       if (Math.abs(starposPrice - fp.price) < 0.01) {
+        samePrice++;
         skippedCount++;
         continue;
       }
@@ -1022,7 +1038,8 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
     result.updatedCount = updatedCount;
     result.skippedCount = skippedCount;
     result.success = true;
-    result.logs.push(`🎉 Sincronización de precios finalizada. Actualizados: ${updatedCount}, sin cambio: ${skippedCount}.`);
+    result.logs.push(`📊 Match: ${samePrice + updatedCount} productos coincidieron por ID, ${noMatchCount} sin match en StarPOS.`);
+    result.logs.push(`🎉 Sincronización de precios finalizada. Actualizados: ${updatedCount}, precio igual: ${samePrice}, sin match: ${noMatchCount}.`);
   } catch (error: unknown) {
     result.success = false;
     const msg = error instanceof Error ? error.message : String(error);

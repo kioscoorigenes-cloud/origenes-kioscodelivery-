@@ -443,10 +443,18 @@ export function starposRoutes({ firestoreDb }: { firestoreDb: Firestore }): Rout
       const products: Record<string, unknown>[] = [];
       snap.forEach(d => products.push({ id: d.id, ...d.data() }));
 
-      // 1. Sync ventas y descontar stock
-      const salesResult = await syncSalesAndDiscountStock(products as any[]);
+      // 1. Sync ventas y descontar stock (no bloquea precios si falla)
+      let salesResult: { success: boolean; ticketsFetched: number; closedCashFetched: number; stockReductions: any[]; logs: string[] } = {
+        success: false, ticketsFetched: 0, closedCashFetched: 0, stockReductions: [], logs: []
+      };
+      try {
+        salesResult = await syncSalesAndDiscountStock(products as any[]);
+      } catch (salesErr: unknown) {
+        const smsg = salesErr instanceof Error ? salesErr.message : String(salesErr);
+        salesResult.logs.push(`⚠️ Error al sincronizar ventas/stock: ${smsg}`);
+      }
 
-      // 2. Sync precios desde StarPOS
+      // 2. Sync precios desde StarPOS (independiente de ventas)
       let pricesResult: { success: boolean; updatedCount: number; logs: string[] } = {
         success: false, updatedCount: 0, logs: []
       };
@@ -457,13 +465,18 @@ export function starposRoutes({ firestoreDb }: { firestoreDb: Firestore }): Rout
         pricesResult.logs.push(`⚠️ Error al sincronizar precios: ${pmsg}`);
       }
 
+      // success: true si al menos una de las dos operaciones funcionó
+      const overallSuccess = salesResult.success || pricesResult.success;
+
       return res.json({
-        success: salesResult.success,
+        success: overallSuccess,
         timestamp: new Date().toISOString(),
         ticketsFetched: salesResult.ticketsFetched,
         closedCashFetched: salesResult.closedCashFetched,
         stockReductions: salesResult.stockReductions.length,
         pricesUpdated: pricesResult.updatedCount,
+        salesSuccess: salesResult.success,
+        pricesSuccess: pricesResult.success,
         logs: [...salesResult.logs, "---", ...pricesResult.logs]
       });
     } catch (err: unknown) {
