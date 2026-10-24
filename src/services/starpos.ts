@@ -946,6 +946,19 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
       return result;
     }
 
+    // DEBUG: mostrar estructura del primer producto para diagnosticar campos de barcode
+    if (starposProducts.length > 0) {
+      const sample = starposProducts[0];
+      const keys = Object.keys(sample as any);
+      result.logs.push("DEBUG keys del 1er producto: " + keys.join(', '));
+      const sAny = sample as any;
+      result.logs.push("DEBUG products_codes: " + JSON.stringify(sAny.products_codes || 'UNDEFINED'));
+      result.logs.push("DEBUG barra: " + JSON.stringify(sAny.barra || 'UNDEFINED'));
+      // Buscar primer producto que tenga algo en products_codes
+      const withCodes = starposProducts.find((p: any) => Array.isArray(p.products_codes) && p.products_codes.length > 0);
+      result.logs.push("DEBUG 1er producto con products_codes: " + (withCodes ? JSON.stringify((withCodes as any).products_codes) : 'NINGUNO'));
+    }
+
     // Construir mapa codigo de barras → precio de venta.
     // El ID de StarPOS no coincide con el de Firestore (los productos cargados
     // a mano tienen IDs propios), asi que el codigo de barras es la unica clave
