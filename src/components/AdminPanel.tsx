@@ -269,6 +269,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [syncingCatalog, setSyncingCatalog] = useState<boolean>(false);
   const [syncingSales, setSyncingSales] = useState<boolean>(false);
   const [syncingStockDirect, setSyncingStockDirect] = useState<boolean>(false);
+  const [syncingPrices, setSyncingPrices] = useState<boolean>(false);
   const [starposSales, setStarposSales] = useState<any[]>([]);
   const [loadingSales, setLoadingSales] = useState<boolean>(false);
   const [runningDiagnostic, setRunningDiagnostic] = useState<boolean>(false);
@@ -450,29 +451,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     }
   };
 
-  // Handle Seed Barcodes
-  const [seedingBarcodes, setSeedingBarcodes] = useState(false);
-  const handleSeedBarcodes = async () => {
-    setSeedingBarcodes(true);
-    try {
-      const res = await authedFetch('/api/starpos/seed-barcodes', { method: 'POST' });
-      const data = await res.json();
-      if (res.ok && data.success) {
-        setCustomAlert({
-          title: 'Barcodes Sembrados',
-          message: 'Se actualizaron ' + data.updated + ' de ' + data.total + ' productos con sus códigos de barra.'
-        });
-      } else {
-        setCustomAlert({ title: 'Error', message: data.error || 'Fallo al sembrar barcodes' });
-      }
-    } catch (err) {
-      setCustomAlert({ title: 'Error de Red', message: err.message });
-    } finally {
-      setSeedingBarcodes(false);
-    }
-  };
-
-    // Hook to fetch on tab switch
+  // Hook to fetch on tab switch
   useEffect(() => {
     if (currentTab === 'starpos') {
       loadStarposStatus();
@@ -560,6 +539,33 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     } finally {
       setSyncingSales(false);
       loadStarposStatus();
+    }
+  };
+
+  // Handle pull-prices from StarPOS
+  const handlePullPrices = async () => {
+    setSyncingPrices(true);
+    setStarposLogs(["Iniciando sincronización de precios desde StarPOS..."]);
+    try {
+      const res = await authedFetch('/api/starpos/pull-prices', { method: 'POST' });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setStarposLogs(data.logs || ["Precios sincronizados."]);
+        setCustomAlert({
+          title: "Precios Sincronizados",
+          message: `Se actualizaron ${data.updated || 0} precios de ${data.totalFetched || 0} productos StarPOS.`
+        });
+      } else {
+        setStarposLogs(data.logs || [`❌ Error: ${data.error || 'Error desconocido'}`]);
+        setCustomAlert({
+          title: "Error en Sincronización de Precios",
+          message: data.error || "No se pudieron sincronizar los precios."
+        });
+      }
+    } catch (err: any) {
+      setStarposLogs(prev => [...prev, `❌ Error de red: ${err.message}`]);
+    } finally {
+      setSyncingPrices(false);
     }
   };
 
@@ -3734,26 +3740,26 @@ className="bg-slate-800 hover:bg-slate-700 text-sky-400 border border-slate-700/
                     </div>
                   </button>
 
-                  {/* SEED BARCODES BUTTON */}
+                  {/* PULL PRICES BUTTON */}
                   <button
-                    onClick={handleSeedBarcodes}
-                    disabled={seedingBarcodes}
+                    onClick={handlePullPrices}
+                    disabled={syncingCatalog || syncingSales || syncingStockDirect || syncingPrices}
                     className="p-4 bg-amber-50 hover:bg-amber-100 border border-amber-200 hover:border-amber-300 rounded-xl flex flex-col items-center justify-center text-center gap-2 transition-all active:scale-98 cursor-pointer group"
                   >
                     <span className="text-xl group-hover:scale-110 transition-transform">
-                      {seedingBarcodes ? "⏳" : "🏷️"}
+                      {syncingPrices ? "⏳" : "💲"}
                     </span>
                     <div>
                       <span className="text-xs font-black text-slate-800 block">
-                        Sembrar Barcodes
+                        Sincronizar Precios
                       </span>
                       <span className="text-[10px] text-slate-500 font-bold block mt-0.5">
-                        Escribir códigos de barra en Firestore
+                        StarPOS ➔ App Precios
                       </span>
                     </div>
                   </button>
 
-                  </div>
+                </div>
 
                 {/* TERMINAL EMULATOR */}
                 <div className="flex flex-col gap-1.5">
