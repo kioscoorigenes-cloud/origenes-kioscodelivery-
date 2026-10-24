@@ -946,40 +946,31 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
       return result;
     }
 
-    // DEBUG: mostrar estructura del primer producto para diagnosticar campos de barcode
-    if (starposProducts.length > 0) {
-      const sample = starposProducts[0];
-      const keys = Object.keys(sample as any);
-      result.logs.push("DEBUG keys del 1er producto: " + keys.join(', '));
-      const sAny = sample as any;
-      result.logs.push("DEBUG products_codes: " + JSON.stringify(sAny.products_codes || 'UNDEFINED'));
-      result.logs.push("DEBUG barra: " + JSON.stringify(sAny.barra || 'UNDEFINED'));
-      // Buscar primer producto que tenga algo en products_codes
-      const withCodes = starposProducts.find((p: any) => Array.isArray(p.products_codes) && p.products_codes.length > 0);
-      result.logs.push("DEBUG 1er producto con products_codes: " + (withCodes ? JSON.stringify((withCodes as any).products_codes) : 'NINGUNO'));
-    }
-
-    // Construir mapa codigo de barras → precio de venta.
-    // El ID de StarPOS no coincide con el de Firestore (los productos cargados
-    // a mano tienen IDs propios), asi que el codigo de barras es la unica clave
-    // comun y estable entre los dos sistemas.
-    const priceMap = new Map<string, number>();
-    let sinBarcodeStarpos = 0;
+    // Construir mapa StarPOS barcode → precio de venta
+    // Se usa código de barras porque los IDs numéricos de la app y StarPOS
+    // NO coinciden (son catálogos numerados independientemente).
+    const priceByBarcode = new Map<string, number>();
     for (const sp of starposProducts) {
-      if (!sp) continue;
+      if (!sp || !sp.id) continue;
 
-      // El barcode puede venir en 'barra', en 'barcode' o dentro de
-      // products_codes[]. Se descartan codigos cortos (internos del POS).
-      const spAny = sp as unknown as Record<string, unknown>;
-      const candidatos: unknown[] = [spAny.barra, spAny.barcode];
-      if (Array.isArray(sp.products_codes)) {
-        for (const c of sp.products_codes) if (c && c.code) candidatos.push(c.code);
+      // Obtener código de barras del producto StarPOS
+      // Puede venir en products_codes[].code, o directamente como sp.barra / sp.barcode
+      let barcode: string | null = null;
+      const spAny = sp as any;
+      if (spAny.barra && String(spAny.barra).length >= 8) {
+        barcode = String(spAny.barra);
+      } else if (spAny.barcode && String(spAny.barcode).length >= 8) {
+        barcode = String(spAny.barcode);
+      } else if (spAny.reference && String(spAny.reference).trim().length >= 8) {
+        barcode = String(spAny.reference).trim();
+      } else if (Array.isArray(sp.products_codes)) {
+        for (const pc of sp.products_codes) {
+          if (pc.code && String(pc.code).length >= 8) {
+            barcode = String(pc.code);
+            break;
+          }
+        }
       }
-      const barcode = candidatos
-        .map(v => (v == null ? '' : String(v).trim()))
-        .find(v => v.length >= 8);
-
-      if (!barcode) { sinBarcodeStarpos++; continue; }
 
       // Buscar precio en products_prices (price_sell de la primera lista activa)
       let price: number | null = null;
@@ -995,56 +986,58 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
         }
       }
 
-      if (price !== null && price > 0) {
-        priceMap.set(barcode, price);
+      if (price !== null && price > 0 && barcode) {
+        priceByBarcode.set(barcode, price);
       }
     }
 
-    result.logs.push(`${priceMap.size} productos de StarPOS con código de barras y precio válido.`);
-    if (sinBarcodeStarpos > 0) {
-      result.logs.push(`⚠️ ${sinBarcodeStarpos} productos de StarPOS sin código de barras utilizable.`);
+    // DEBUG: mostrar samples de reference para diagnosticar
+    const samplesWithRef = starposProducts.filter((p: any) => p.reference && String(p.reference).trim().length > 0).slice(0, 5);
+    result.logs.push(`DEBUG: ${starposProducts.filter((p: any) => p.reference && String(p.reference).trim().length > 0).length} productos con reference no vacío.`);
+    for (const s of samplesWithRef) {
+      const sa = s as any;
+      result.logs.push(`  ref="${sa.reference}" name="${sa.name}" prices=${JSON.stringify(sa.products_prices?.slice?.(0,1) || sa.products_prices || 'UNDEF')}`);
     }
 
-    // Leer productos de Firestore
-    result.logs.push("Leyendo productos de Firestore...");
-    const firestoreProducts: { id: string; price: number; barcode: string }[] = [];
-    let sinBarcodeFirestore = 0;
+    result.logs.push(`${priceByBarcode.size} productos con precio+barcode válido en StarPOS.`);
 
-    const agregar = (id: string, d: Record<string, unknown>) => {
-      const barcode = d.barcode == null ? '' : String(d.barcode).trim();
-      // Sin codigo de barras no hay con que matchear: se deja el precio como esta.
-      if (!barcode) { sinBarcodeFirestore++; return; }
-      firestoreProducts.push({ id, price: Number(d.price) || 0, barcode });
-    };
+    // Leer productos de Firestore (incluyendo barcode para el matching)
+    result.logs.push("Leyendo productos de Firestore...");
+    let firestoreProducts: { id: string; price: number; barcode?: string }[] = [];
 
     if (adminDb) {
       const snap = await adminDb.collection('products').get();
       snap.forEach((docSnap: FirebaseFirestore.QueryDocumentSnapshot) => {
-        agregar(docSnap.id, docSnap.data() as Record<string, unknown>);
+        const d = docSnap.data();
+        firestoreProducts.push({ id: docSnap.id, price: d.price || 0, barcode: d.barcode || undefined });
       });
     } else {
       const snap = await getDocs(collection(db, 'products'));
       snap.forEach(docSnap => {
-        agregar(docSnap.id, docSnap.data() as Record<string, unknown>);
+        const d = docSnap.data();
+        firestoreProducts.push({ id: docSnap.id, price: d.price || 0, barcode: d.barcode || undefined });
       });
     }
 
-    result.logs.push(`${firestoreProducts.length} productos de Firestore con código de barras.`);
-    if (sinBarcodeFirestore > 0) {
-      result.logs.push(`⚠️ ${sinBarcodeFirestore} productos de Firestore sin código de barras: no se les toca el precio.`);
-    }
+    const withBarcode = firestoreProducts.filter(fp => fp.barcode);
+    result.logs.push(`${firestoreProducts.length} productos en Firestore (${withBarcode.length} con barcode).`);
 
-    // Actualizar precios donde haya diferencia
+    // Actualizar precios matcheando por código de barras
     let updatedCount = 0;
     let skippedCount = 0;
     let noMatchCount = 0;
     let samePrice = 0;
 
     for (const fp of firestoreProducts) {
-      const starposPrice = priceMap.get(fp.barcode);
+      if (!fp.barcode) {
+        // Sin barcode no se puede matchear con StarPOS
+        noMatchCount++;
+        continue;
+      }
 
+      const starposPrice = priceByBarcode.get(fp.barcode);
       if (starposPrice === undefined) {
-        // El codigo de barras no aparece en StarPOS.
+        // Barcode no encontrado en StarPOS
         noMatchCount++;
         continue;
       }
@@ -1068,7 +1061,7 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
 
       updatedCount++;
       if (updatedCount <= 20) {
-        result.logs.push(`   -> "${fp.id}" (${fp.barcode}): ${fp.price} → ${starposPrice}`);
+        result.logs.push(`   -> "${fp.id}": $${fp.price} → $${starposPrice}`);
       }
     }
 
@@ -1079,7 +1072,7 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
     result.updatedCount = updatedCount;
     result.skippedCount = skippedCount;
     result.success = true;
-    result.logs.push(`📊 Match: ${samePrice + updatedCount} productos coincidieron por código de barras, ${noMatchCount} sin match en StarPOS.`);
+    result.logs.push(`📊 Match por barcode: ${samePrice + updatedCount} coincidieron, ${noMatchCount} sin match (sin barcode o barcode no encontrado en StarPOS).`);
     result.logs.push(`🎉 Sincronización de precios finalizada. Actualizados: ${updatedCount}, precio igual: ${samePrice}, sin match: ${noMatchCount}.`);
   } catch (error: unknown) {
     result.success = false;
