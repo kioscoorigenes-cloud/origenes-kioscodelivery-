@@ -67,6 +67,8 @@ function sanitizeProductForWrite(p: any) {
   if (p.neww != null) clean.neww = Boolean(p.neww);
   if (p.codigoFacturador != null && String(p.codigoFacturador).trim() !== '')
     clean.codigoFacturador = String(p.codigoFacturador).slice(0, 100);
+  if (p.barcode != null && String(p.barcode).trim() !== '')
+    clean.barcode = String(p.barcode).slice(0, 50);
   return clean;
 }
 

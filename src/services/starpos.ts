@@ -946,11 +946,27 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
       return result;
     }
 
-    // Construir mapa StarPOS ID → precio de venta
+    // Construir mapa codigo de barras → precio de venta.
+    // El ID de StarPOS no coincide con el de Firestore (los productos cargados
+    // a mano tienen IDs propios), asi que el codigo de barras es la unica clave
+    // comun y estable entre los dos sistemas.
     const priceMap = new Map<string, number>();
+    let sinBarcodeStarpos = 0;
     for (const sp of starposProducts) {
-      if (!sp || !sp.id) continue;
-      const id = String(sp.id);
+      if (!sp) continue;
+
+      // El barcode puede venir en 'barra', en 'barcode' o dentro de
+      // products_codes[]. Se descartan codigos cortos (internos del POS).
+      const spAny = sp as unknown as Record<string, unknown>;
+      const candidatos: unknown[] = [spAny.barra, spAny.barcode];
+      if (Array.isArray(sp.products_codes)) {
+        for (const c of sp.products_codes) if (c && c.code) candidatos.push(c.code);
+      }
+      const barcode = candidatos
+        .map(v => (v == null ? '' : String(v).trim()))
+        .find(v => v.length >= 8);
+
+      if (!barcode) { sinBarcodeStarpos++; continue; }
 
       // Buscar precio en products_prices (price_sell de la primera lista activa)
       let price: number | null = null;
@@ -967,31 +983,43 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
       }
 
       if (price !== null && price > 0) {
-        priceMap.set(id, price);
+        priceMap.set(barcode, price);
       }
     }
 
-    result.logs.push(`${priceMap.size} productos con precio válido en StarPOS.`);
+    result.logs.push(`${priceMap.size} productos de StarPOS con código de barras y precio válido.`);
+    if (sinBarcodeStarpos > 0) {
+      result.logs.push(`⚠️ ${sinBarcodeStarpos} productos de StarPOS sin código de barras utilizable.`);
+    }
 
     // Leer productos de Firestore
     result.logs.push("Leyendo productos de Firestore...");
-    let firestoreProducts: { id: string; price: number }[] = [];
+    const firestoreProducts: { id: string; price: number; barcode: string }[] = [];
+    let sinBarcodeFirestore = 0;
+
+    const agregar = (id: string, d: Record<string, unknown>) => {
+      const barcode = d.barcode == null ? '' : String(d.barcode).trim();
+      // Sin codigo de barras no hay con que matchear: se deja el precio como esta.
+      if (!barcode) { sinBarcodeFirestore++; return; }
+      firestoreProducts.push({ id, price: Number(d.price) || 0, barcode });
+    };
 
     if (adminDb) {
       const snap = await adminDb.collection('products').get();
       snap.forEach((docSnap: FirebaseFirestore.QueryDocumentSnapshot) => {
-        const d = docSnap.data();
-        firestoreProducts.push({ id: docSnap.id, price: d.price || 0 });
+        agregar(docSnap.id, docSnap.data() as Record<string, unknown>);
       });
     } else {
       const snap = await getDocs(collection(db, 'products'));
       snap.forEach(docSnap => {
-        const d = docSnap.data();
-        firestoreProducts.push({ id: docSnap.id, price: d.price || 0 });
+        agregar(docSnap.id, docSnap.data() as Record<string, unknown>);
       });
     }
 
-    result.logs.push(`${firestoreProducts.length} productos en Firestore.`);
+    result.logs.push(`${firestoreProducts.length} productos de Firestore con código de barras.`);
+    if (sinBarcodeFirestore > 0) {
+      result.logs.push(`⚠️ ${sinBarcodeFirestore} productos de Firestore sin código de barras: no se les toca el precio.`);
+    }
 
     // Actualizar precios donde haya diferencia
     let updatedCount = 0;
@@ -1000,10 +1028,10 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
     let samePrice = 0;
 
     for (const fp of firestoreProducts) {
-      const starposPrice = priceMap.get(fp.id);
+      const starposPrice = priceMap.get(fp.barcode);
 
       if (starposPrice === undefined) {
-        // Producto no está en StarPOS (puede ser manual con ID largo tipo 178xxx)
+        // El codigo de barras no aparece en StarPOS.
         noMatchCount++;
         continue;
       }
@@ -1027,7 +1055,7 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
 
       updatedCount++;
       if (updatedCount <= 20) {
-        result.logs.push(`   -> "${fp.id}": $${fp.price} → $${starposPrice}`);
+        result.logs.push(`   -> "${fp.id}" (${fp.barcode}): ${fp.price} → ${starposPrice}`);
       }
     }
 
@@ -1038,7 +1066,7 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
     result.updatedCount = updatedCount;
     result.skippedCount = skippedCount;
     result.success = true;
-    result.logs.push(`📊 Match: ${samePrice + updatedCount} productos coincidieron por ID, ${noMatchCount} sin match en StarPOS.`);
+    result.logs.push(`📊 Match: ${samePrice + updatedCount} productos coincidieron por código de barras, ${noMatchCount} sin match en StarPOS.`);
     result.logs.push(`🎉 Sincronización de precios finalizada. Actualizados: ${updatedCount}, precio igual: ${samePrice}, sin match: ${noMatchCount}.`);
   } catch (error: unknown) {
     result.success = false;
