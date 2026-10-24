@@ -450,7 +450,29 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     }
   };
 
-  // Hook to fetch on tab switch
+  // Handle Seed Barcodes
+  const [seedingBarcodes, setSeedingBarcodes] = useState(false);
+  const handleSeedBarcodes = async () => {
+    setSeedingBarcodes(true);
+    try {
+      const res = await authedFetch('/api/starpos/seed-barcodes', { method: 'POST' });
+      const data = await res.json();
+      if (res.ok && data.success) {
+        setCustomAlert({
+          title: 'Barcodes Sembrados',
+          message: 'Se actualizaron ' + data.updated + ' de ' + data.total + ' productos con sus códigos de barra.'
+        });
+      } else {
+        setCustomAlert({ title: 'Error', message: data.error || 'Fallo al sembrar barcodes' });
+      }
+    } catch (err) {
+      setCustomAlert({ title: 'Error de Red', message: err.message });
+    } finally {
+      setSeedingBarcodes(false);
+    }
+  };
+
+    // Hook to fetch on tab switch
   useEffect(() => {
     if (currentTab === 'starpos') {
       loadStarposStatus();
@@ -3712,7 +3734,26 @@ className="bg-slate-800 hover:bg-slate-700 text-sky-400 border border-slate-700/
                     </div>
                   </button>
 
-                </div>
+                  {/* SEED BARCODES BUTTON */}
+                  <button
+                    onClick={handleSeedBarcodes}
+                    disabled={seedingBarcodes}
+                    className="p-4 bg-amber-50 hover:bg-amber-100 border border-amber-200 hover:border-amber-300 rounded-xl flex flex-col items-center justify-center text-center gap-2 transition-all active:scale-98 cursor-pointer group"
+                  >
+                    <span className="text-xl group-hover:scale-110 transition-transform">
+                      {seedingBarcodes ? "⏳" : "🏷️"}
+                    </span>
+                    <div>
+                      <span className="text-xs font-black text-slate-800 block">
+                        Sembrar Barcodes
+                      </span>
+                      <span className="text-[10px] text-slate-500 font-bold block mt-0.5">
+                        Escribir códigos de barra en Firestore
+                      </span>
+                    </div>
+                  </button>
+
+                  </div>
 
                 {/* TERMINAL EMULATOR */}
                 <div className="flex flex-col gap-1.5">
