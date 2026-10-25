@@ -973,13 +973,71 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
     }
 
     result.logs.push(`${starposItems.length} productos con precio válido en StarPOS.`);
-    // DEBUG: mostrar primeros 5 nombres StarPOS normalizados
-    result.logs.push(`DEBUG StarPOS nombres (5): ${starposItems.slice(0, 5).map(s => `"${s.normName}"`).join(', ')}`);
+    // DEBUG: mostrar primeros 10 nombres StarPOS normalizados
+    result.logs.push(`DEBUG StarPOS nombres (10): ${starposItems.slice(0, 10).map(s => `"${s.normName}"`).join(', ')}`);
 
-    // Función de fuzzy match: busca el mejor producto StarPOS para un nombre de app
+    // Mapa de keywords de marca: app name keyword → posibles keywords en StarPOS
+    const brandAliases: Record<string, string[]> = {
+      'cocacola': ['coca cola', 'coca', 'cocacola'],
+      'coca': ['coca cola', 'coca', 'cocacola'],
+      'pepsi': ['pepsi'],
+      'sprite': ['sprite'],
+      'seven': ['seven up', '7up', 'seven'],
+      'villavicencio': ['villavicencio', 'villa'],
+      'cepita': ['cepita'],
+      'monster': ['monster'],
+      'gatorade': ['gatorade'],
+      'rogel': ['rogel', 'alfajor rogel'],
+      'sugus': ['sugus'],
+      'mentitas': ['mentitas', 'menta'],
+      'gomitas': ['gomitas', 'gomita'],
+      'lays': ['lays', 'lay'],
+      'cheetos': ['cheetos', 'cheeto'],
+      'oreo': ['oreo'],
+      'pepito': ['pepito'],
+      'criollitas': ['criollitas', 'criollita'],
+      'milka': ['milka'],
+      'toblerone': ['toblerone'],
+      'serenisima': ['serenisima', 'la serenisima'],
+      'yogur': ['yogur', 'yogurt'],
+      'ser': ['ser'],
+      'manteca': ['manteca'],
+      'paulina': ['paulina', 'la paulina'],
+      'jamon': ['jamon'],
+      'salame': ['salame', 'salami'],
+      'paleta': ['paleta'],
+      'queso': ['queso'],
+      'fideos': ['fideos', 'fideo'],
+      'matarazzo': ['matarazzo'],
+      'arroz': ['arroz'],
+      'gallo': ['gallo'],
+      'yerba': ['yerba'],
+      'taraguii': ['taraguii', 'taragui'],
+      'aceite': ['aceite'],
+      'natura': ['natura'],
+      'pure': ['pure'],
+      'tomates': ['tomate', 'tomates'],
+      'arcor': ['arcor'],
+      'mayonesa': ['mayonesa', 'mayone'],
+      'hellmanns': ['hellmanns', 'hellmann'],
+      'azucar': ['azucar'],
+      'ledesma': ['ledesma'],
+      'harina': ['harina'],
+      'blancaflor': ['blancaflor'],
+      'atun': ['atun'],
+      'gomes': ['gomes'],
+      'bimbo': ['bimbo'],
+      'medialunas': ['medialuna', 'medialunas'],
+      'fernet': ['fernet'],
+      'branca': ['branca'],
+    };
+
+    const generic = new Set(['el','la','los','las','de','del','con','sin','en','por','para','un','una','pack','x','al','natural','clasica','clasico','classic','original','ml','1l','500ml','1kg','500g','200g','100g','250g','90g','80g','60g','117g','135g','190g','400g','520g','900ml','170g']);
+
+    // Función de fuzzy match mejorada con scoring
     function findBestMatch(appName: string): { price: number; spName: string } | null {
       const norm = normalizeName(appName);
-      const appWords = norm.split(' ').filter(w => w.length > 1);
+      const appWords = norm.split(' ').filter(w => w.length > 1 && !generic.has(w));
 
       // 1. Exact match
       const exact = starposItems.find(sp => sp.normName === norm);
@@ -989,29 +1047,80 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
       const contained = starposItems.find(sp => sp.normName.includes(norm) || norm.includes(sp.normName));
       if (contained) return { price: contained.price, spName: contained.name };
 
-      // 3. First significant word match (brand name) + at least one more word
-      if (appWords.length >= 1) {
-        const brand = appWords[0];
-        // Skip generic words as brand
-        const generic = new Set(['el','la','los','las','de','del','con','sin','en','por','para','un','una','pack','x']);
-        if (!generic.has(brand)) {
-          const candidates = starposItems.filter(sp => sp.normName.includes(brand));
-          if (candidates.length === 1) {
-            return { price: candidates[0].price, spName: candidates[0].name };
+      // 3. Score-based: cada palabra significativa de la app que aparece en el nombre StarPOS suma puntos
+      let bestScore = 0;
+      let bestMatch: { price: number; spName: string } | null = null;
+      let bestCount = 0; // cuantos empataron con el mejor score
+
+      for (const sp of starposItems) {
+        let score = 0;
+        for (const w of appWords) {
+          // Check direct word match
+          if (sp.normName.includes(w)) {
+            score += w.length; // longer word = more specific = higher score
           }
-          // If multiple candidates and we have more words, narrow down
-          if (candidates.length > 1 && appWords.length >= 2) {
-            const refined = candidates.filter(sp => {
-              let matches = 0;
-              for (const w of appWords.slice(1)) {
-                if (!generic.has(w) && sp.normName.includes(w)) matches++;
+          // Check brand aliases
+          const aliases = brandAliases[w];
+          if (aliases) {
+            for (const alias of aliases) {
+              if (sp.normName.includes(alias)) {
+                score += alias.length;
+                break; // only count one alias
               }
-              return matches > 0;
-            });
-            if (refined.length === 1) {
-              return { price: refined[0].price, spName: refined[0].name };
             }
           }
+        }
+
+        // Also check if StarPOS name words appear in the app name
+        const spWords = sp.normName.split(' ').filter(w => w.length > 1 && !generic.has(w));
+        for (const sw of spWords) {
+          if (norm.includes(sw)) {
+            score += sw.length;
+          }
+        }
+
+        if (score > bestScore) {
+          bestScore = score;
+          bestMatch = { price: sp.price, spName: sp.name };
+          bestCount = 1;
+        } else if (score === bestScore && score > 0) {
+          bestCount++;
+        }
+      }
+
+      // Only return if score is meaningful (at least 4 chars matched) and unique best
+      if (bestMatch && bestScore >= 4 && bestCount === 1) {
+        return bestMatch;
+      }
+
+      // 4. If multiple tied, try to disambiguate with size/quantity keywords
+      if (bestCount > 1 && bestScore >= 4) {
+        // Try matching with quantity info too
+        const sizeMatch = norm.match(/(\d+)\s*(ml|l|g|kg)/);
+        if (sizeMatch) {
+          const sizeStr = sizeMatch[1] + sizeMatch[2];
+          let sizedBest: { price: number; spName: string } | null = null;
+          let sizedCount = 0;
+          for (const sp of starposItems) {
+            let score = 0;
+            for (const w of appWords) {
+              if (sp.normName.includes(w)) score += w.length;
+              const aliases = brandAliases[w];
+              if (aliases) {
+                for (const alias of aliases) {
+                  if (sp.normName.includes(alias)) { score += alias.length; break; }
+                }
+              }
+            }
+            const spWords = sp.normName.split(' ').filter(w => w.length > 1 && !generic.has(w));
+            for (const sw of spWords) { if (norm.includes(sw)) score += sw.length; }
+
+            if (score === bestScore && sp.normName.includes(sizeStr)) {
+              sizedBest = { price: sp.price, spName: sp.name };
+              sizedCount++;
+            }
+          }
+          if (sizedBest && sizedCount === 1) return sizedBest;
         }
       }
 

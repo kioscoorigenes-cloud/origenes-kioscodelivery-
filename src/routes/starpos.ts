@@ -410,6 +410,22 @@ export function starposRoutes({ firestoreDb }: { firestoreDb: Firestore }): Rout
     }
   });
 
+  // Pull prices con cron-token (para testing sin auth Firebase)
+  router.post("/pull-prices-cron", async (req, res) => {
+    const token = req.headers["x-cron-token"] || req.query.token;
+    const expected = process.env.CRON_SECRET_TOKEN;
+    if (!expected || token !== expected) {
+      return res.status(401).json({ success: false, error: "Token inválido" });
+    }
+    try {
+      const result = await pullPricesFromStarPOS();
+      return res.json(result);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return res.status(502).json({ success: false, error: msg });
+    }
+  });
+
   // ==========================================
   // AUTO-SYNC DIARIO (llamado por cron/scheduled task)
   // Protegido por token secreto en lugar de auth de admin
@@ -513,39 +529,6 @@ export function starposRoutes({ firestoreDb }: { firestoreDb: Firestore }): Rout
       const msg = err instanceof Error ? err.message : String(err);
       console.warn("[StarPOS] No se pudo consultar starpos_imported_sales:", msg);
       return res.json({ success: true, sales: [], degraded: true });
-    }
-  });
-
-
-  // POST /api/starpos/seed-barcodes — actualiza solo barcode en Firestore
-  router.post("/seed-barcodes", requireAdmin, async (_req, res) => {
-    try {
-      const adminDb = getAdminFirestore();
-      if (!adminDb) return res.status(500).json({ error: "Sin Firestore admin" });
-      const BARCODES: Record<string, string> = {
-        "1":"7790895000782","2":"7791813969587","3":"7790895000829","4":"7799155000197",
-        "5":"7798085681834","6":"70847032861","7":"7791813444381","8":"7792170042012",
-        "9":"7790040614000","10":"7790580060602","11":"7790206008308","12":"7798124360348",
-        "13":"7790310982853","14":"7790310985328","15":"7791249001929","16":"7790040003569",
-        "17":"7622300339692","18":"7790040377806","20":"7622300990213","21":"7614500010013",
-        "23":"7793940088001","24":"7791337007437","25":"7790398100088","26":"7795917008661",
-        "27":"7790079019586","28":"7790625005353","30":"2001100005344","31":"7793940376917",
-        "33":"7793890261233","34":"7790070030504","35":"8480017555281","36":"7791293030807",
-        "37":"7891150075382","40":"7500435216562","41":"7793253004774","43":"7790230040008",
-        "44":"7790070416179","50":"7790415131231","52":"7790290001193","53":"7798098847173",
-        "55":"810886011133","56":"7792798002351","57":"7792798003709","58":"7790580130732",
-        "59":"7891136052000","60":"7791250001857","450":"7790387110234","451":"7796039001639",
-        "452":"7790580129279","453":"7794000004825","454":"7792540000017","455":"7792180134509",
-        "456":"7891167011717"
-      };
-      let updated = 0;
-      for (const [docId, barcode] of Object.entries(BARCODES)) {
-        try { await adminDb.collection("products").doc(docId).update({ barcode }); updated++; } catch (e) {}
-      }
-      return res.json({ success: true, updated, total: Object.keys(BARCODES).length });
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      return res.status(500).json({ error: msg });
     }
   });
 
