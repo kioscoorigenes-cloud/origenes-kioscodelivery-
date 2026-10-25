@@ -286,13 +286,13 @@ export async function authenticateStarPOS(forceRefresh = false): Promise<string>
 /**
  * Safe fetch helper using cached token, with automatic retry on 401/403.
  */
-async function authenticatedFetch(endpoint: string, options: RequestInit = {}): Promise<Response> {
+async function authenticatedFetch(endpoint: string, options: RequestInit = {}, timeoutMs = 10000): Promise<Response> {
   const config = await getStarPOSConfig();
   const url = `${config.serviceUrl.replace(/\/$/, '')}${endpoint}`;
 
   const doFetch = async (token: string): Promise<Response> => {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 10000);
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
     try {
       return await fetch(url, {
         ...options,
@@ -916,9 +916,9 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
     await authenticateStarPOS();
     result.logs.push("🔑 Conexión exitosa con la API de StarPOS.");
 
-    // Traer productos de StarPOS
+    // Traer productos de StarPOS (timeout largo: 11k+ productos)
     result.logs.push("Consultando GET /v1/Products...");
-    const response = await authenticatedFetch('/v1/Products');
+    const response = await authenticatedFetch('/v1/Products', {}, 60000);
 
     if (!response.ok) {
       throw new Error(`Fallo al consultar productos (Status: ${response.status})`);
