@@ -946,17 +946,14 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
       return result;
     }
 
-    // Construir mapa StarPOS nombre normalizado → precio de venta
-    // La API de StarPOS no expone barcodes (products_codes vacío, no hay campo barra).
-    // Se matchea por nombre normalizado como estrategia principal.
-    const normalizeName = (n: string) => n.toLowerCase().replace(/\s+/g, ' ').trim();
+    // Construir lista StarPOS con nombre y precio.
+    // La API de StarPOS no expone barcodes. Se matchea por nombre fuzzy.
+    const normalizeName = (n: string) => n.toLowerCase().replace(/[^a-záéíóúñü0-9\s]/g, '').replace(/\s+/g, ' ').trim();
 
-    const priceByName = new Map<string, number>();
-    let withPrice = 0;
+    const starposItems: { name: string; normName: string; price: number }[] = [];
     for (const sp of starposProducts) {
       if (!sp || !sp.name) continue;
 
-      // Buscar precio en products_prices (price_sell de la primera lista activa)
       let price: number | null = null;
       if (Array.isArray(sp.products_prices)) {
         for (const pp of sp.products_prices) {
@@ -971,12 +968,53 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
       }
 
       if (price !== null && price > 0) {
-        withPrice++;
-        priceByName.set(normalizeName(sp.name), price);
+        starposItems.push({ name: sp.name, normName: normalizeName(sp.name), price });
       }
     }
 
-    result.logs.push(`${withPrice} productos con precio válido en StarPOS. ${priceByName.size} nombres únicos.`);
+    result.logs.push(`${starposItems.length} productos con precio válido en StarPOS.`);
+
+    // Función de fuzzy match: busca el mejor producto StarPOS para un nombre de app
+    function findBestMatch(appName: string): { price: number; spName: string } | null {
+      const norm = normalizeName(appName);
+      const appWords = norm.split(' ').filter(w => w.length > 1);
+
+      // 1. Exact match
+      const exact = starposItems.find(sp => sp.normName === norm);
+      if (exact) return { price: exact.price, spName: exact.name };
+
+      // 2. One contains the other
+      const contained = starposItems.find(sp => sp.normName.includes(norm) || norm.includes(sp.normName));
+      if (contained) return { price: contained.price, spName: contained.name };
+
+      // 3. First significant word match (brand name) + at least one more word
+      if (appWords.length >= 1) {
+        const brand = appWords[0];
+        // Skip generic words as brand
+        const generic = new Set(['el','la','los','las','de','del','con','sin','en','por','para','un','una','pack','x']);
+        if (!generic.has(brand)) {
+          const candidates = starposItems.filter(sp => sp.normName.includes(brand));
+          if (candidates.length === 1) {
+            return { price: candidates[0].price, spName: candidates[0].name };
+          }
+          // If multiple candidates and we have more words, narrow down
+          if (candidates.length > 1 && appWords.length >= 2) {
+            const refined = candidates.filter(sp => {
+              let matches = 0;
+              for (const w of appWords.slice(1)) {
+                if (!generic.has(w) && sp.normName.includes(w)) matches++;
+              }
+              return matches > 0;
+            });
+            if (refined.length === 1) {
+              return { price: refined[0].price, spName: refined[0].name };
+            }
+          }
+        }
+      }
+
+      return null;
+    }
 
     // Leer productos de Firestore (incluyendo name para el matching)
     result.logs.push("Leyendo productos de Firestore...");
@@ -1011,12 +1049,13 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
         continue;
       }
 
-      const starposPrice = priceByName.get(normalizeName(fp.name));
-      if (starposPrice === undefined) {
+      const match = findBestMatch(fp.name);
+      if (!match) {
         noMatchCount++;
         if (noMatchNames.length < 10) noMatchNames.push(fp.name);
         continue;
       }
+      const starposPrice = match.price;
 
       // Solo actualizar si el precio cambió
       if (Math.abs(starposPrice - fp.price) < 0.01) {
@@ -1037,7 +1076,7 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
 
       updatedCount++;
       if (updatedCount <= 20) {
-        result.logs.push(`   -> "${fp.name}": $${fp.price} → $${starposPrice}`);
+        result.logs.push(`   -> "${fp.name}" ↔ "${match.spName}": $${fp.price} → $${starposPrice}`);
       }
     }
 
