@@ -918,7 +918,7 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
 
     // Traer productos de StarPOS (timeout largo: 11k+ productos)
     result.logs.push("Consultando GET /v1/Products...");
-    const response = await authenticatedFetch('/v1/Products', {}, 60000);
+    const response = await authenticatedFetch('/v1/Products', {}, 180000);
 
     if (!response.ok) {
       throw new Error(`Fallo al consultar productos (Status: ${response.status})`);
