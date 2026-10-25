@@ -397,17 +397,39 @@ export function starposRoutes({ firestoreDb }: { firestoreDb: Firestore }): Rout
   // Sincronizar PRECIOS desde StarPOS → Firestore
   // Usa GET /v1/Products para traer precios y actualizar los productos existentes.
   // Solo toca el campo price, nunca borra fotos ni datos.
+  // Estado en memoria del último sync de precios (para polling)
+  let lastPriceSync: { running: boolean; result: any; startedAt?: number } = { running: false, result: null };
+
   router.post("/pull-prices", requireAdmin, async (_req, res) => {
+    // Si ya está corriendo, informar
+    if (lastPriceSync.running) {
+      return res.json({ success: false, error: "Ya hay una sincronización en curso. Esperá unos segundos.", running: true });
+    }
+
+    // Responder inmediatamente y procesar en background
+    lastPriceSync = { running: true, result: null, startedAt: Date.now() };
+    res.json({ success: true, message: "Sincronización iniciada en background. Consultá /api/starpos/pull-prices-status para ver el resultado.", background: true });
+
+    // Ejecutar en background
     try {
       const result = await pullPricesFromStarPOS();
-      return res.json(result);
+      lastPriceSync = { running: false, result };
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      return res.status(502).json({
-        success: false,
-        error: msg || "Error al sincronizar precios con StarPOS"
-      });
+      lastPriceSync = { running: false, result: { success: false, error: msg, logs: [`❌ Error: ${msg}`] } };
     }
+  });
+
+  // Endpoint para consultar el estado/resultado del último sync
+  router.get("/pull-prices-status", requireAdmin, async (_req, res) => {
+    if (lastPriceSync.running) {
+      const elapsed = lastPriceSync.startedAt ? Math.round((Date.now() - lastPriceSync.startedAt) / 1000) : 0;
+      return res.json({ running: true, elapsed, message: `Sincronización en curso... (${elapsed}s)` });
+    }
+    if (lastPriceSync.result) {
+      return res.json({ running: false, ...lastPriceSync.result });
+    }
+    return res.json({ running: false, message: "No hay sincronización reciente." });
   });
 
   // Pull prices con cron-token (para testing sin auth Firebase)

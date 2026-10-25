@@ -542,14 +542,60 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     }
   };
 
-  // Handle pull-prices from StarPOS
+  // Handle pull-prices from StarPOS (background + polling)
   const handlePullPrices = async () => {
     setSyncingPrices(true);
     setStarposLogs(["Iniciando sincronización de precios desde StarPOS..."]);
     try {
+      // Disparar en background
       const res = await authedFetch('/api/starpos/pull-prices', { method: 'POST' });
       const data = await res.json();
-      if (res.ok && data.success) {
+
+      if (data.running) {
+        setStarposLogs(prev => [...prev, "⏳ Ya hay una sincronización en curso..."]);
+        setSyncingPrices(false);
+        return;
+      }
+
+      if (data.background) {
+        // Polling del resultado cada 5 segundos
+        setStarposLogs(prev => [...prev, "⏳ Procesando en background... esperando resultado..."]);
+        const pollResult = async (): Promise<void> => {
+          for (let i = 0; i < 60; i++) { // max 5 minutos
+            await new Promise(r => setTimeout(r, 5000));
+            try {
+              const statusRes = await authedFetch('/api/starpos/pull-prices-status');
+              const statusData = await statusRes.json();
+              if (statusData.running) {
+                setStarposLogs(prev => {
+                  const filtered = prev.filter(l => !l.startsWith("⏳ Procesando"));
+                  return [...filtered, `⏳ Procesando... (${statusData.elapsed || '?'}s)`];
+                });
+                continue;
+              }
+              // Terminó
+              if (statusData.success) {
+                setStarposLogs(statusData.logs || ["Precios sincronizados."]);
+                setCustomAlert({
+                  title: "Precios Sincronizados",
+                  message: `Se actualizaron ${statusData.updatedCount || 0} precios de ${statusData.totalFetched || 0} productos StarPOS.`
+                });
+              } else {
+                setStarposLogs(statusData.logs || [`❌ Error: ${statusData.error || 'Error desconocido'}`]);
+                setCustomAlert({
+                  title: "Error en Sincronización de Precios",
+                  message: statusData.error || "No se pudieron sincronizar los precios."
+                });
+              }
+              return;
+            } catch {
+              // Seguir intentando
+            }
+          }
+          setStarposLogs(prev => [...prev, "⚠️ Timeout: la sincronización sigue corriendo en el servidor."]);
+        };
+        await pollResult();
+      } else if (data.success) {
         setStarposLogs(data.logs || ["Precios sincronizados."]);
         setCustomAlert({
           title: "Precios Sincronizados",
