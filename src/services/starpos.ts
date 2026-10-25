@@ -973,6 +973,8 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
     }
 
     result.logs.push(`${starposItems.length} productos con precio válido en StarPOS.`);
+    // DEBUG: mostrar primeros 5 nombres StarPOS normalizados
+    result.logs.push(`DEBUG StarPOS nombres (5): ${starposItems.slice(0, 5).map(s => `"${s.normName}"`).join(', ')}`);
 
     // Función de fuzzy match: busca el mejor producto StarPOS para un nombre de app
     function findBestMatch(appName: string): { price: number; spName: string } | null {
@@ -1035,6 +1037,8 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
     }
 
     result.logs.push(`${firestoreProducts.length} productos en Firestore.`);
+    // DEBUG: mostrar primeros 5 nombres Firestore normalizados
+    result.logs.push(`DEBUG Firestore nombres (5): ${firestoreProducts.slice(0, 5).map(f => `"${normalizeName(f.name)}"`).join(', ')}`);
 
     // Actualizar precios matcheando por nombre normalizado
     let updatedCount = 0;
