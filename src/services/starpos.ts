@@ -1126,12 +1126,27 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
         }
       }
 
-      if (bestMatch && bestScore >= 4 && bestCount === 1) {
+      // Verificar que el score sea significativo (al menos 50% de las palabras de la app matchean)
+      const maxPossible = appWords.reduce((s, w) => s + w.length, 0);
+      const minScore = Math.max(6, Math.floor(maxPossible * 0.5));
+
+      // Verificar tamaño: si la app tiene un tamaño, el match debe tenerlo también
+      const appSize = norm.match(/(\d+(?:[.,]\d+)?)\s*(ml|l|lts|lt|g|gr|grs|kg)/);
+      if (bestMatch && bestScore >= minScore && bestCount === 1) {
+        if (appSize) {
+          const appSizeNorm = appSize[1].replace(',', '.') + appSize[2].replace(/^(lts|lt)$/, 'l').replace(/^(gr|grs)$/, 'g');
+          const matchNorm = normalizeName(bestMatch.spName);
+          const matchSize = matchNorm.match(/(\d+(?:[.,]\d+)?)\s*(ml|l|lts|lt|g|gr|grs|kg)/);
+          if (matchSize) {
+            const matchSizeNorm = matchSize[1].replace(',', '.') + matchSize[2].replace(/^(lts|lt)$/, 'l').replace(/^(gr|grs)$/, 'g');
+            if (appSizeNorm !== matchSizeNorm) return null; // tamaños no coinciden
+          }
+        }
         return bestMatch;
       }
 
       // 4. Desambiguar por tamaño si hay empate
-      if (bestCount > 1 && bestScore >= 4) {
+      if (bestCount > 1 && bestScore >= minScore) {
         const sizeMatch = norm.match(/(\d+)\s*(ml|l|g|kg)/);
         if (sizeMatch) {
           const sizeStr = sizeMatch[1] + sizeMatch[2];
@@ -1207,8 +1222,8 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
 
       // Actualizar SOLO el precio — no tocar nada más (fotos, nombre, categoría, stock)
       const updateFn = adminDb
-        ? adminDb.collection('products').doc(fp.id).update({ price: starposPrice })
-        : updateDoc(doc(db, 'products', fp.id), { price: starposPrice });
+        ? adminDb.collection('products').doc(fp.id).set({ price: starposPrice }, { merge: true })
+        : setDoc(doc(db, 'products', fp.id), { price: starposPrice }, { merge: true });
       updatePromises.push(updateFn.then(() => {}));
 
       updatedCount++;
