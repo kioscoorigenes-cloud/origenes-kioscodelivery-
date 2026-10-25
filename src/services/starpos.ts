@@ -1034,49 +1034,87 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
 
     const generic = new Set(['el','la','los','las','de','del','con','sin','en','por','para','un','una','pack','x','al','natural','clasica','clasico','classic','original','ml','1l','500ml','1kg','500g','200g','100g','250g','90g','80g','60g','117g','135g','190g','400g','520g','900ml','170g']);
 
-    // Función de fuzzy match mejorada con scoring
+    // Pre-computar datos de StarPOS para evitar re-calcular en cada iteración
+    const exactMap = new Map<string, { price: number; name: string }>();
+    // Índice invertido: palabra → índices de starposItems que la contienen
+    const wordIndex = new Map<string, number[]>();
+    // Pre-computar spWords para cada item
+    const precomputedSpWords: string[][] = [];
+
+    for (let i = 0; i < starposItems.length; i++) {
+      const sp = starposItems[i];
+      exactMap.set(sp.normName, { price: sp.price, name: sp.name });
+      const spWords = sp.normName.split(' ').filter(w => w.length > 1 && !generic.has(w));
+      precomputedSpWords.push(spWords);
+      // Indexar cada palabra
+      for (const w of spWords) {
+        if (!wordIndex.has(w)) wordIndex.set(w, []);
+        wordIndex.get(w)!.push(i);
+      }
+    }
+
+    result.logs.push(`Índice construido: ${exactMap.size} nombres, ${wordIndex.size} palabras únicas.`);
+
+    // Función de fuzzy match optimizada
     function findBestMatch(appName: string): { price: number; spName: string } | null {
       const norm = normalizeName(appName);
-      const appWords = norm.split(' ').filter(w => w.length > 1 && !generic.has(w));
 
-      // 1. Exact match
-      const exact = starposItems.find(sp => sp.normName === norm);
+      // 1. Exact match (O(1) con Map)
+      const exact = exactMap.get(norm);
       if (exact) return { price: exact.price, spName: exact.name };
 
-      // 2. One contains the other
-      const contained = starposItems.find(sp => sp.normName.includes(norm) || norm.includes(sp.normName));
-      if (contained) return { price: contained.price, spName: contained.name };
+      const appWords = norm.split(' ').filter(w => w.length > 1 && !generic.has(w));
+      if (appWords.length === 0) return null;
 
-      // 3. Score-based: cada palabra significativa de la app que aparece en el nombre StarPOS suma puntos
-      let bestScore = 0;
-      let bestMatch: { price: number; spName: string } | null = null;
-      let bestCount = 0; // cuantos empataron con el mejor score
-
-      for (const sp of starposItems) {
-        let score = 0;
-        for (const w of appWords) {
-          // Check direct word match
-          if (sp.normName.includes(w)) {
-            score += w.length; // longer word = more specific = higher score
-          }
-          // Check brand aliases
-          const aliases = brandAliases[w];
-          if (aliases) {
-            for (const alias of aliases) {
-              if (sp.normName.includes(alias)) {
-                score += alias.length;
-                break; // only count one alias
-              }
+      // 2. Recopilar candidatos usando el índice invertido (solo items que comparten al menos una palabra)
+      const candidateSet = new Set<number>();
+      for (const w of appWords) {
+        const indices = wordIndex.get(w);
+        if (indices) for (const idx of indices) candidateSet.add(idx);
+        // También buscar por aliases
+        const aliases = brandAliases[w];
+        if (aliases) {
+          for (const alias of aliases) {
+            const aliasWords = alias.split(' ');
+            for (const aw of aliasWords) {
+              const ai = wordIndex.get(aw);
+              if (ai) for (const idx of ai) candidateSet.add(idx);
             }
           }
         }
+      }
 
-        // Also check if StarPOS name words appear in the app name
-        const spWords = sp.normName.split(' ').filter(w => w.length > 1 && !generic.has(w));
-        for (const sw of spWords) {
-          if (norm.includes(sw)) {
-            score += sw.length;
+      // Si no hay candidatos por índice, contención como fallback (más rápido que full scan)
+      if (candidateSet.size === 0) {
+        // Intentar contención solo si el nombre es corto
+        if (norm.length <= 15) {
+          const contained = starposItems.find(sp => sp.normName.includes(norm) || norm.includes(sp.normName));
+          if (contained) return { price: contained.price, spName: contained.name };
+        }
+        return null;
+      }
+
+      // 3. Scoring solo sobre candidatos
+      let bestScore = 0;
+      let bestMatch: { price: number; spName: string } | null = null;
+      let bestCount = 0;
+
+      for (const idx of candidateSet) {
+        const sp = starposItems[idx];
+        let score = 0;
+        for (const w of appWords) {
+          if (sp.normName.includes(w)) {
+            score += w.length;
           }
+          const aliases = brandAliases[w];
+          if (aliases) {
+            for (const alias of aliases) {
+              if (sp.normName.includes(alias)) { score += alias.length; break; }
+            }
+          }
+        }
+        for (const sw of precomputedSpWords[idx]) {
+          if (norm.includes(sw)) score += sw.length;
         }
 
         if (score > bestScore) {
@@ -1088,20 +1126,19 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
         }
       }
 
-      // Only return if score is meaningful (at least 4 chars matched) and unique best
       if (bestMatch && bestScore >= 4 && bestCount === 1) {
         return bestMatch;
       }
 
-      // 4. If multiple tied, try to disambiguate with size/quantity keywords
+      // 4. Desambiguar por tamaño si hay empate
       if (bestCount > 1 && bestScore >= 4) {
-        // Try matching with quantity info too
         const sizeMatch = norm.match(/(\d+)\s*(ml|l|g|kg)/);
         if (sizeMatch) {
           const sizeStr = sizeMatch[1] + sizeMatch[2];
           let sizedBest: { price: number; spName: string } | null = null;
           let sizedCount = 0;
-          for (const sp of starposItems) {
+          for (const idx of candidateSet) {
+            const sp = starposItems[idx];
             let score = 0;
             for (const w of appWords) {
               if (sp.normName.includes(w)) score += w.length;
@@ -1112,9 +1149,9 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
                 }
               }
             }
-            const spWords = sp.normName.split(' ').filter(w => w.length > 1 && !generic.has(w));
-            for (const sw of spWords) { if (norm.includes(sw)) score += sw.length; }
-
+            for (const sw of precomputedSpWords[idx]) {
+              if (norm.includes(sw)) score += sw.length;
+            }
             if (score === bestScore && sp.normName.includes(sizeStr)) {
               sizedBest = { price: sp.price, spName: sp.name };
               sizedCount++;
@@ -1155,6 +1192,7 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
     let noMatchCount = 0;
     let samePrice = 0;
     const noMatchNames: string[] = [];
+    const updatePromises: Promise<void>[] = [];
 
     for (const fp of firestoreProducts) {
       if (!fp.name) {
@@ -1178,14 +1216,10 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
       }
 
       // Actualizar SOLO el precio — no tocar nada más (fotos, nombre, categoría, stock)
-      if (adminDb) {
-        await adminDb.collection('products').doc(fp.id).update({
-          price: starposPrice
-        });
-      } else {
-        const productRef = doc(db, 'products', fp.id);
-        await updateDoc(productRef, { price: starposPrice });
-      }
+      const updateFn = adminDb
+        ? adminDb.collection('products').doc(fp.id).update({ price: starposPrice })
+        : updateDoc(doc(db, 'products', fp.id), { price: starposPrice });
+      updatePromises.push(updateFn.then(() => {}));
 
       updatedCount++;
       if (updatedCount <= 20) {
@@ -1195,6 +1229,11 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
 
     if (updatedCount > 20) {
       result.logs.push(`   ... y ${updatedCount - 20} productos más.`);
+    }
+
+    // Ejecutar todas las actualizaciones en paralelo (batches de 50)
+    for (let i = 0; i < updatePromises.length; i += 50) {
+      await Promise.all(updatePromises.slice(i, i + 50));
     }
 
     result.updatedCount = updatedCount;
