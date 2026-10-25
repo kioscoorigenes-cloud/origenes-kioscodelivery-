@@ -1164,27 +1164,17 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
       return null;
     }
 
-    // Leer productos de Firestore (incluyendo name para el matching)
-    result.logs.push("Leyendo productos de Firestore...");
-    let firestoreProducts: { id: string; name: string; price: number }[] = [];
+    // Usar DEFAULT_PRODUCTS como referencia en vez de leer toda la colección Firestore
+    // (leer 2000+ docs agota la cuota gratuita de Firestore)
+    const { DEFAULT_PRODUCTS } = await import('../data');
+    const firestoreProducts = DEFAULT_PRODUCTS.map(p => ({
+      id: String(p.id),
+      name: p.name,
+      price: p.price
+    }));
 
-    if (adminDb) {
-      const snap = await adminDb.collection('products').get();
-      snap.forEach((docSnap: FirebaseFirestore.QueryDocumentSnapshot) => {
-        const d = docSnap.data();
-        firestoreProducts.push({ id: docSnap.id, name: d.name || '', price: d.price || 0 });
-      });
-    } else {
-      const snap = await getDocs(collection(db, 'products'));
-      snap.forEach(docSnap => {
-        const d = docSnap.data();
-        firestoreProducts.push({ id: docSnap.id, name: d.name || '', price: d.price || 0 });
-      });
-    }
-
-    result.logs.push(`${firestoreProducts.length} productos en Firestore.`);
-    // DEBUG: mostrar primeros 5 nombres Firestore normalizados
-    result.logs.push(`DEBUG Firestore nombres (5): ${firestoreProducts.slice(0, 5).map(f => `"${normalizeName(f.name)}"`).join(', ')}`);
+    result.logs.push(`${firestoreProducts.length} productos de la app para sincronizar.`);
+    result.logs.push(`Nombres (5): ${firestoreProducts.slice(0, 5).map(f => `"${normalizeName(f.name)}"`).join(', ')}`);
 
     // Actualizar precios matcheando por nombre normalizado
     let updatedCount = 0;
