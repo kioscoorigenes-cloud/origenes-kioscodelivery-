@@ -227,7 +227,7 @@ export default function App() {
 
           for (const docSnap of snap.docs) {
             const data = docSnap.data() as Product;
-            if (!data.name_lower) {
+            if (!data.name_lower && data.name) {
               const nameLowerValue = data.name.trim().toLowerCase();
               batch.update(doc(db, 'products', docSnap.id), { name_lower: nameLowerValue });
               count++;

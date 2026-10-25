@@ -286,13 +286,13 @@ export async function authenticateStarPOS(forceRefresh = false): Promise<string>
 /**
  * Safe fetch helper using cached token, with automatic retry on 401/403.
  */
-async function authenticatedFetch(endpoint: string, options: RequestInit = {}): Promise<Response> {
+async function authenticatedFetch(endpoint: string, options: RequestInit = {}, timeoutMs = 10000): Promise<Response> {
   const config = await getStarPOSConfig();
   const url = `${config.serviceUrl.replace(/\/$/, '')}${endpoint}`;
 
   const doFetch = async (token: string): Promise<Response> => {
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 10000);
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
     try {
       return await fetch(url, {
         ...options,
@@ -916,9 +916,9 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
     await authenticateStarPOS();
     result.logs.push("🔑 Conexión exitosa con la API de StarPOS.");
 
-    // Traer productos de StarPOS
+    // Traer productos de StarPOS (timeout largo: 11k+ productos)
     result.logs.push("Consultando GET /v1/Products...");
-    const response = await authenticatedFetch('/v1/Products');
+    const response = await authenticatedFetch('/v1/Products', {}, 60000);
 
     if (!response.ok) {
       throw new Error(`Fallo al consultar productos (Status: ${response.status})`);
@@ -946,13 +946,14 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
       return result;
     }
 
-    // Construir mapa StarPOS ID → precio de venta
-    const priceMap = new Map<string, number>();
-    for (const sp of starposProducts) {
-      if (!sp || !sp.id) continue;
-      const id = String(sp.id);
+    // Construir lista StarPOS con nombre y precio.
+    // La API de StarPOS no expone barcodes. Se matchea por nombre fuzzy.
+    const normalizeName = (n: string) => n.toLowerCase().replace(/[^a-záéíóúñü0-9\s]/g, '').replace(/\s+/g, ' ').trim();
 
-      // Buscar precio en products_prices (price_sell de la primera lista activa)
+    const starposItems: { name: string; normName: string; price: number }[] = [];
+    for (const sp of starposProducts) {
+      if (!sp || !sp.name) continue;
+
       let price: number | null = null;
       if (Array.isArray(sp.products_prices)) {
         for (const pp of sp.products_prices) {
@@ -967,46 +968,294 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
       }
 
       if (price !== null && price > 0) {
-        priceMap.set(id, price);
+        starposItems.push({ name: sp.name, normName: normalizeName(sp.name), price });
       }
     }
 
-    result.logs.push(`${priceMap.size} productos con precio válido en StarPOS.`);
+    result.logs.push(`${starposItems.length} productos con precio válido en StarPOS.`);
+    // DEBUG: mostrar primeros 10 nombres StarPOS normalizados
+    result.logs.push(`DEBUG StarPOS nombres (10): ${starposItems.slice(0, 10).map(s => `"${s.normName}"`).join(', ')}`);
 
-    // Leer productos de Firestore
-    result.logs.push("Leyendo productos de Firestore...");
-    let firestoreProducts: { id: string; price: number }[] = [];
+    // Mapa de keywords de marca: app name keyword → posibles keywords en StarPOS
+    const brandAliases: Record<string, string[]> = {
+      'cocacola': ['coca cola', 'coca', 'cocacola'],
+      'coca': ['coca cola', 'coca', 'cocacola'],
+      'pepsi': ['pepsi'],
+      'sprite': ['sprite'],
+      'seven': ['seven up', '7up', 'seven'],
+      'villavicencio': ['villavicencio', 'villa'],
+      'cepita': ['cepita'],
+      'monster': ['monster'],
+      'gatorade': ['gatorade'],
+      'rogel': ['rogel', 'alfajor rogel'],
+      'sugus': ['sugus'],
+      'mentitas': ['mentitas', 'menta'],
+      'gomitas': ['gomitas', 'gomita'],
+      'lays': ['lays', 'lay'],
+      'cheetos': ['cheetos', 'cheeto'],
+      'oreo': ['oreo'],
+      'pepito': ['pepito'],
+      'criollitas': ['criollitas', 'criollita'],
+      'milka': ['milka'],
+      'toblerone': ['toblerone'],
+      'serenisima': ['serenisima', 'la serenisima'],
+      'yogur': ['yogur', 'yogurt'],
+      'ser': ['ser'],
+      'manteca': ['manteca'],
+      'paulina': ['paulina', 'la paulina'],
+      'jamon': ['jamon'],
+      'salame': ['salame', 'salami'],
+      'paleta': ['paleta'],
+      'queso': ['queso'],
+      'fideos': ['fideos', 'fideo'],
+      'matarazzo': ['matarazzo'],
+      'arroz': ['arroz'],
+      'gallo': ['gallo'],
+      'yerba': ['yerba'],
+      'taraguii': ['taraguii', 'taragui'],
+      'aceite': ['aceite'],
+      'natura': ['natura'],
+      'pure': ['pure'],
+      'tomates': ['tomate', 'tomates'],
+      'arcor': ['arcor'],
+      'mayonesa': ['mayonesa', 'mayone'],
+      'hellmanns': ['hellmanns', 'hellmann'],
+      'azucar': ['azucar'],
+      'ledesma': ['ledesma'],
+      'harina': ['harina'],
+      'blancaflor': ['blancaflor'],
+      'atun': ['atun'],
+      'gomes': ['gomes'],
+      'bimbo': ['bimbo'],
+      'medialunas': ['medialuna', 'medialunas'],
+      'fernet': ['fernet'],
+      'branca': ['branca'],
+    };
 
-    if (adminDb) {
-      const snap = await adminDb.collection('products').get();
-      snap.forEach((docSnap: FirebaseFirestore.QueryDocumentSnapshot) => {
-        const d = docSnap.data();
-        firestoreProducts.push({ id: docSnap.id, price: d.price || 0 });
-      });
-    } else {
-      const snap = await getDocs(collection(db, 'products'));
-      snap.forEach(docSnap => {
-        const d = docSnap.data();
-        firestoreProducts.push({ id: docSnap.id, price: d.price || 0 });
-      });
+    const generic = new Set(['el','la','los','las','de','del','con','sin','en','por','para','un','una','pack','x','al','natural','clasica','clasico','classic','original','ml','1l','500ml','1kg','500g','200g','100g','250g','90g','80g','60g','117g','135g','190g','400g','520g','900ml','170g']);
+
+    // Pre-computar datos de StarPOS para evitar re-calcular en cada iteración
+    const exactMap = new Map<string, { price: number; name: string }>();
+    // Índice invertido: palabra → índices de starposItems que la contienen
+    const wordIndex = new Map<string, number[]>();
+    // Pre-computar spWords para cada item
+    const precomputedSpWords: string[][] = [];
+
+    for (let i = 0; i < starposItems.length; i++) {
+      const sp = starposItems[i];
+      exactMap.set(sp.normName, { price: sp.price, name: sp.name });
+      const spWords = sp.normName.split(' ').filter(w => w.length > 1 && !generic.has(w));
+      precomputedSpWords.push(spWords);
+      // Indexar cada palabra
+      for (const w of spWords) {
+        if (!wordIndex.has(w)) wordIndex.set(w, []);
+        wordIndex.get(w)!.push(i);
+      }
     }
 
-    result.logs.push(`${firestoreProducts.length} productos en Firestore.`);
+    result.logs.push(`Índice construido: ${exactMap.size} nombres, ${wordIndex.size} palabras únicas.`);
 
-    // Actualizar precios donde haya diferencia
+    // Función de fuzzy match optimizada
+    function findBestMatch(appName: string): { price: number; spName: string } | null {
+      const norm = normalizeName(appName);
+
+      // 1. Exact match (O(1) con Map)
+      const exact = exactMap.get(norm);
+      if (exact) return { price: exact.price, spName: exact.name };
+
+      const appWords = norm.split(' ').filter(w => w.length > 1 && !generic.has(w));
+      if (appWords.length === 0) return null;
+
+      // 2. Recopilar candidatos usando el índice invertido (solo items que comparten al menos una palabra)
+      const candidateSet = new Set<number>();
+      for (const w of appWords) {
+        const indices = wordIndex.get(w);
+        if (indices) for (const idx of indices) candidateSet.add(idx);
+        // También buscar por aliases
+        const aliases = brandAliases[w];
+        if (aliases) {
+          for (const alias of aliases) {
+            const aliasWords = alias.split(' ');
+            for (const aw of aliasWords) {
+              const ai = wordIndex.get(aw);
+              if (ai) for (const idx of ai) candidateSet.add(idx);
+            }
+          }
+        }
+      }
+
+      // Si no hay candidatos por índice, contención como fallback (más rápido que full scan)
+      if (candidateSet.size === 0) {
+        // Intentar contención solo si el nombre es corto
+        if (norm.length <= 15) {
+          const contained = starposItems.find(sp => sp.normName.includes(norm) || norm.includes(sp.normName));
+          if (contained) return { price: contained.price, spName: contained.name };
+        }
+        return null;
+      }
+
+      // 3. Scoring solo sobre candidatos
+      let bestScore = 0;
+      let bestMatch: { price: number; spName: string } | null = null;
+      let bestCount = 0;
+
+      for (const idx of candidateSet) {
+        const sp = starposItems[idx];
+        let score = 0;
+        for (const w of appWords) {
+          if (sp.normName.includes(w)) {
+            score += w.length;
+          }
+          const aliases = brandAliases[w];
+          if (aliases) {
+            for (const alias of aliases) {
+              if (sp.normName.includes(alias)) { score += alias.length; break; }
+            }
+          }
+        }
+        for (const sw of precomputedSpWords[idx]) {
+          if (norm.includes(sw)) score += sw.length;
+        }
+
+        if (score > bestScore) {
+          bestScore = score;
+          bestMatch = { price: sp.price, spName: sp.name };
+          bestCount = 1;
+        } else if (score === bestScore && score > 0) {
+          bestCount++;
+        }
+      }
+
+      // Verificar que el score sea significativo (al menos 50% de las palabras de la app matchean)
+      const maxPossible = appWords.reduce((s, w) => s + w.length, 0);
+      const minScore = Math.max(6, Math.floor(maxPossible * 0.5));
+
+      // Verificar tamaño: si la app tiene un tamaño, el match debe tenerlo también
+      const appSize = norm.match(/(\d+(?:[.,]\d+)?)\s*(ml|l|lts|lt|g|gr|grs|kg)/);
+      if (bestMatch && bestScore >= minScore && bestCount === 1) {
+        // Verificar que no sea un match espurio: al menos 1 palabra de la app debe estar en el match
+        // (Esto evita "Leche La Serenísima" → "DULCE DE LECHE" donde solo "leche" matchea)
+        const matchNormFull = normalizeName(bestMatch.spName);
+        const appInMatch = appWords.filter(w => matchNormFull.includes(w)).length;
+        if (appInMatch < 1) return null;
+
+        if (appSize) {
+          const appSizeNorm = appSize[1].replace(',', '.') + appSize[2].replace(/^(lts|lt)$/, 'l').replace(/^(gr|grs)$/, 'g');
+          const matchNorm = normalizeName(bestMatch.spName);
+          const matchSize = matchNorm.match(/(\d+(?:[.,]\d+)?)\s*(ml|l|lts|lt|g|gr|grs|kg)/);
+          if (matchSize) {
+            const matchSizeNorm = matchSize[1].replace(',', '.') + matchSize[2].replace(/^(lts|lt)$/, 'l').replace(/^(gr|grs)$/, 'g');
+            if (appSizeNorm !== matchSizeNorm) return null; // tamaños no coinciden
+          }
+        }
+        return bestMatch;
+      }
+
+      // 4. Desambiguar por tamaño si hay empate
+      if (bestCount > 1 && bestScore >= minScore) {
+        const sizeMatch = norm.match(/(\d+)\s*(ml|l|g|kg)/);
+        if (sizeMatch) {
+          const sizeStr = sizeMatch[1] + sizeMatch[2];
+          let sizedBest: { price: number; spName: string } | null = null;
+          let sizedCount = 0;
+          for (const idx of candidateSet) {
+            const sp = starposItems[idx];
+            let score = 0;
+            for (const w of appWords) {
+              if (sp.normName.includes(w)) score += w.length;
+              const aliases = brandAliases[w];
+              if (aliases) {
+                for (const alias of aliases) {
+                  if (sp.normName.includes(alias)) { score += alias.length; break; }
+                }
+              }
+            }
+            for (const sw of precomputedSpWords[idx]) {
+              if (norm.includes(sw)) score += sw.length;
+            }
+            if (score === bestScore && sp.normName.includes(sizeStr)) {
+              sizedBest = { price: sp.price, spName: sp.name };
+              sizedCount++;
+            }
+          }
+          if (sizedBest && sizedCount === 1) return sizedBest;
+        }
+      }
+
+      return null;
+    }
+
+    // Mapeo manual para productos que el fuzzy matching no puede resolver
+    // (nombres demasiado diferentes entre app y StarPOS)
+    const manualOverrides: Record<string, string[]> = {
+      // app name (lowercase) → posibles nombres StarPOS (lowercase substrings a buscar)
+      'coca-cola 500ml': ['coca cola 500', 'coca-cola 500'],
+      'monster energy 473ml': ['monster 473', 'monster energy'],
+      'gatorade naranja 500ml': ['gatorade 500', 'gatorade naranja'],
+      'leche la serenísima 1l': ['leche entera serenisima', 'leche serenisima 1', 'la serenisima leche'],
+      'palitos de la selva 60g': ['palitos selva', 'palitos de la selva'],
+      'facturas surtidas x4': ['facturas surtidas', 'facturas x4', 'factura surtida'],
+      'medialunas x6': ['medialunas x6', 'medialuna x6', 'medialunas x 6'],
+      'shampoo elvive 400ml': ['elvive 400', 'shampoo elvive'],
+      'jabón dove 90g': ['jabon dove', 'dove 90'],
+      'detergente magistral 750ml': ['magistral 750', 'detergente magistral'],
+      'lavandina ayudín 1l': ['ayudin 1', 'lavandina ayudin'],
+      'vino trapiche malbec 750ml': ['trapiche malbec', 'trapiche 750'],
+      'pedigree adultos 1kg': ['pedigree adulto', 'pedigree 1kg', 'pedigree 1 kg'],
+      'pizza tia maruca 350g': ['tia maruca', 'pizza tia maruca'],
+      'cerveza patagonia amber 410ml': ['patagonia amber', 'patagonia 410'],
+      'cerveza corona porrón 330ml': ['corona 330', 'corona porron'],
+      'pote helado frigor ddl 1l': ['frigor ddl', 'helado frigor', 'frigor dulce'],
+      'campari 750ml': ['campari 750', 'campari'],
+      'vodka smirnoff 700ml': ['smirnoff 700', 'vodka smirnoff'],
+    };
+
+    // Función de override: busca en starposItems usando los patterns del mapeo manual
+    function findManualOverride(appName: string): { price: number; spName: string } | null {
+      const key = appName.toLowerCase();
+      const patterns = manualOverrides[key];
+      if (!patterns) return null;
+      for (const pattern of patterns) {
+        const found = starposItems.find(sp => sp.normName.includes(pattern));
+        if (found) return { price: found.price, spName: found.name };
+      }
+      return null;
+    }
+
+    // Usar DEFAULT_PRODUCTS como referencia en vez de leer toda la colección Firestore
+    // (leer 2000+ docs agota la cuota gratuita de Firestore)
+    const { DEFAULT_PRODUCTS } = await import('../data');
+    const firestoreProducts = DEFAULT_PRODUCTS.map(p => ({
+      id: String(p.id),
+      name: p.name,
+      price: p.price
+    }));
+
+    result.logs.push(`${firestoreProducts.length} productos de la app para sincronizar.`);
+    result.logs.push(`Nombres (5): ${firestoreProducts.slice(0, 5).map(f => `"${normalizeName(f.name)}"`).join(', ')}`);
+
+    // Actualizar precios matcheando por nombre normalizado
     let updatedCount = 0;
     let skippedCount = 0;
     let noMatchCount = 0;
     let samePrice = 0;
+    const noMatchNames: string[] = [];
+    const updatePromises: Promise<void>[] = [];
 
     for (const fp of firestoreProducts) {
-      const starposPrice = priceMap.get(fp.id);
-
-      if (starposPrice === undefined) {
-        // Producto no está en StarPOS (puede ser manual con ID largo tipo 178xxx)
+      if (!fp.name) {
         noMatchCount++;
         continue;
       }
+
+      // Primero intentar override manual, luego fuzzy
+      const match = findManualOverride(fp.name) || findBestMatch(fp.name);
+      if (!match) {
+        noMatchCount++;
+        if (noMatchNames.length < 10) noMatchNames.push(fp.name);
+        continue;
+      }
+      const starposPrice = match.price;
 
       // Solo actualizar si el precio cambió
       if (Math.abs(starposPrice - fp.price) < 0.01) {
@@ -1016,18 +1265,15 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
       }
 
       // Actualizar SOLO el precio — no tocar nada más (fotos, nombre, categoría, stock)
-      if (adminDb) {
-        await adminDb.collection('products').doc(fp.id).update({
-          price: starposPrice
-        });
-      } else {
-        const productRef = doc(db, 'products', fp.id);
-        await updateDoc(productRef, { price: starposPrice });
-      }
+      // Usar set+merge en vez de update para no fallar si el doc no existe aún
+      const updateFn = adminDb
+        ? adminDb.collection('products').doc(fp.id).set({ price: starposPrice }, { merge: true })
+        : setDoc(doc(db, 'products', fp.id), { price: starposPrice }, { merge: true });
+      updatePromises.push(updateFn.then(() => {}));
 
       updatedCount++;
       if (updatedCount <= 20) {
-        result.logs.push(`   -> "${fp.id}": $${fp.price} → $${starposPrice}`);
+        result.logs.push(`   -> "${fp.name}" ↔ "${match.spName}": $${fp.price} → $${starposPrice}`);
       }
     }
 
@@ -1035,10 +1281,18 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
       result.logs.push(`   ... y ${updatedCount - 20} productos más.`);
     }
 
+    // Ejecutar todas las actualizaciones en paralelo (batches de 50)
+    for (let i = 0; i < updatePromises.length; i += 50) {
+      await Promise.all(updatePromises.slice(i, i + 50));
+    }
+
     result.updatedCount = updatedCount;
     result.skippedCount = skippedCount;
     result.success = true;
-    result.logs.push(`📊 Match: ${samePrice + updatedCount} productos coincidieron por ID, ${noMatchCount} sin match en StarPOS.`);
+    result.logs.push(`📊 Match por nombre: ${samePrice + updatedCount} coincidieron, ${noMatchCount} sin match.`);
+    if (noMatchNames.length > 0) {
+      result.logs.push(`   Sin match (primeros ${noMatchNames.length}): ${noMatchNames.join(', ')}`);
+    }
     result.logs.push(`🎉 Sincronización de precios finalizada. Actualizados: ${updatedCount}, precio igual: ${samePrice}, sin match: ${noMatchCount}.`);
   } catch (error: unknown) {
     result.success = false;
