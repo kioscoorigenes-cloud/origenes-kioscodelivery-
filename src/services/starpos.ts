@@ -938,20 +938,24 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
       starposProducts = [];
     }
 
-    result.totalFetched = starposProducts.length;
-    result.logs.push(`Recuperados ${starposProducts.length} productos de StarPOS.`);
+    result.logs.push(`Recuperados ${starposProducts.length} productos totales de StarPOS.`);
 
     if (starposProducts.length === 0) {
       result.logs.push("⚠️ No se recibieron productos. Verificá que GET /v1/Products esté habilitado.");
       return result;
     }
 
+    // Filtrar solo productos con stock (eliminar duplicados/productos viejos sin stock)
+    const inStockProducts = starposProducts.filter(sp => sp && sp.in_stock === true);
+    result.logs.push(`📦 ${inStockProducts.length} productos con stock (de ${starposProducts.length} totales).`);
+    result.totalFetched = inStockProducts.length;
+
     // Construir lista StarPOS con nombre y precio.
     // La API de StarPOS no expone barcodes. Se matchea por nombre fuzzy.
     const normalizeName = (n: string) => n.toLowerCase().replace(/[^a-záéíóúñü0-9\s]/g, '').replace(/\s+/g, ' ').trim();
 
     const starposItems: { name: string; normName: string; price: number }[] = [];
-    for (const sp of starposProducts) {
+    for (const sp of inStockProducts) {
       if (!sp || !sp.name) continue;
 
       let price: number | null = null;
@@ -972,7 +976,7 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
       }
     }
 
-    result.logs.push(`${starposItems.length} productos con precio válido en StarPOS.`);
+    result.logs.push(`${starposItems.length} productos con stock y precio válido en StarPOS.`);
     // DEBUG: mostrar primeros 10 nombres StarPOS normalizados
     result.logs.push(`DEBUG StarPOS nombres (10): ${starposItems.slice(0, 10).map(s => `"${s.normName}"`).join(', ')}`);
 
