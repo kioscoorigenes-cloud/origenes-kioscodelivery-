@@ -563,64 +563,67 @@ export function starposRoutes({ firestoreDb }: { firestoreDb: Firestore }): Rout
       return res.json({ success: false, logs, error: "STARPOS_SERVICE_URL está vacía" });
     }
 
-    // Test 1: ¿Se puede conectar al host?
-    try {
-      const controller = new AbortController();
-      const timeoutId = setTimeout(() => controller.abort(), 8000);
-      const authUrl = `${serviceUrl.replace(/\/$/, '')}/v1/Authenticate`;
-      logs.push(`Probando conexión a: ${authUrl}`);
+    // Extraer hostname para probar múltiples puertos
+    let baseHost = "";
+    try { const p = new URL(serviceUrl); baseHost = p.hostname; } catch { baseHost = serviceUrl.replace(/^https?:\/\//, '').replace(/:\d+.*/, '').replace(/\/.*/, ''); }
 
-      const resp = await fetch(authUrl, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ userId, secret }),
-        signal: controller.signal,
-      });
-      clearTimeout(timeoutId);
+    const urlsToTest = [...new Set([
+      serviceUrl.replace(/\/$/, ''),
+      `http://${baseHost}:8090`,
+      `http://${baseHost}:8080`,
+      `http://${baseHost}`,
+      `https://${baseHost}`,
+      `https://${baseHost}:8443`,
+    ])];
 
-      const text = await resp.text();
-      logs.push(`Respuesta: HTTP ${resp.status}`);
-      logs.push(`Body (primeros 200 chars): ${text.substring(0, 200)}`);
+    for (const testUrl of urlsToTest) {
+      try {
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 6000);
+        const authUrl = `${testUrl}/v1/Authenticate`;
+        logs.push(`--- Probando: ${authUrl} ---`);
 
-      if (resp.ok) {
-        // Test 2: Probar /v1/Products
-        try {
-          const ctrl2 = new AbortController();
-          const t2 = setTimeout(() => ctrl2.abort(), 15000);
-          const prodUrl = `${serviceUrl.replace(/\/$/, '')}/v1/Products`;
-          logs.push(`Probando: GET ${prodUrl} (15s timeout)...`);
+        const resp = await fetch(authUrl, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ userId, secret }),
+          signal: controller.signal,
+        });
+        clearTimeout(timeoutId);
+        const text = await resp.text();
+        logs.push(`✅ HTTP ${resp.status} — ${text.substring(0, 150)}`);
 
-          const token2 = JSON.parse(text);
-          const bearerToken = token2?.token || token2?.access_token || token2;
-          const prodResp = await fetch(prodUrl, {
-            headers: { 'Authorization': `Bearer ${typeof bearerToken === 'string' ? bearerToken : JSON.stringify(bearerToken)}` },
-            signal: ctrl2.signal,
-          });
-          clearTimeout(t2);
-
-          logs.push(`Products: HTTP ${prodResp.status}, content-length: ${prodResp.headers.get('content-length') || 'unknown'}`);
-          const prodText = await prodResp.text();
-          logs.push(`Products body size: ${prodText.length} chars`);
-
+        if (resp.ok) {
+          logs.push(`🎯 FUNCIONA en ${testUrl}`);
           try {
-            const parsed = JSON.parse(prodText);
-            const arr = Array.isArray(parsed) ? parsed : (parsed?.Products || parsed?.data || parsed?.payload || parsed?.items || []);
-            if (Array.isArray(arr)) {
-              const withStock = arr.filter((p: any) => p?.in_stock === true);
-              logs.push(`Total productos: ${arr.length}, con stock: ${withStock.length}`);
-            }
-          } catch { logs.push("No se pudo parsear Products JSON"); }
-        } catch (e2: any) {
-          logs.push(`Products falló: ${e2.message}`);
+            const ctrl2 = new AbortController();
+            const t2 = setTimeout(() => ctrl2.abort(), 20000);
+            const tkn = JSON.parse(text);
+            const bearer = tkn?.token || tkn?.access_token || tkn;
+            const prodResp = await fetch(`${testUrl}/v1/Products`, {
+              headers: { 'Authorization': `Bearer ${typeof bearer === 'string' ? bearer : JSON.stringify(bearer)}` },
+              signal: ctrl2.signal,
+            });
+            clearTimeout(t2);
+            const prodText = await prodResp.text();
+            logs.push(`Products: HTTP ${prodResp.status}, ${prodText.length} chars`);
+            try {
+              const parsed = JSON.parse(prodText);
+              const arr = Array.isArray(parsed) ? parsed : (parsed?.Products || parsed?.data || parsed?.payload || parsed?.items || []);
+              if (Array.isArray(arr)) {
+                const withStock = arr.filter((p: any) => p?.in_stock === true);
+                logs.push(`Total: ${arr.length}, con stock: ${withStock.length}`);
+              }
+            } catch { logs.push("No se pudo parsear Products JSON"); }
+          } catch (e2: any) { logs.push(`Products: ${e2.message}`); }
+          return res.json({ success: true, workingUrl: testUrl, logs });
         }
+      } catch (err: any) {
+        const cause = err.cause ? ` (${err.cause.code || ''})` : '';
+        logs.push(`❌ ${err.message}${cause}`);
       }
-
-      return res.json({ success: resp.ok, logs });
-    } catch (err: any) {
-      logs.push(`Error de conexión: ${err.message}`);
-      if (err.cause) logs.push(`Causa: ${JSON.stringify(err.cause)}`);
-      return res.json({ success: false, logs, error: err.message });
     }
+    return res.json({ success: false, logs, error: "Ningún puerto/protocolo funcionó" });
   });
 
   // Get imported StarPOS tickets for AdminPanel display
