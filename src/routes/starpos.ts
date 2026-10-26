@@ -397,16 +397,68 @@ export function starposRoutes({ firestoreDb }: { firestoreDb: Firestore }): Rout
   // Sincronizar PRECIOS desde StarPOS → Firestore
   // Usa GET /v1/Products para traer precios y actualizar los productos existentes.
   // Solo toca el campo price, nunca borra fotos ni datos.
+  // Estado en memoria del último sync de precios (para polling)
+  let lastPriceSync: { running: boolean; result: any; startedAt?: number } = { running: false, result: null };
+
+  // Auto-reset si lleva más de 5 minutos (el proceso crasheó o se colgó)
+  const SYNC_TIMEOUT_MS = 5 * 60 * 1000;
+
   router.post("/pull-prices", requireAdmin, async (_req, res) => {
+    // Si ya está corriendo, verificar timeout
+    if (lastPriceSync.running) {
+      const elapsed = lastPriceSync.startedAt ? Date.now() - lastPriceSync.startedAt : 0;
+      if (elapsed > SYNC_TIMEOUT_MS) {
+        console.warn(`[StarPOS] Sync stuck por ${Math.round(elapsed/1000)}s — reseteando flag.`);
+        lastPriceSync = { running: false, result: { success: false, error: "Sincronización anterior expiró (timeout 5 min). Intentá de nuevo.", logs: ["⚠️ Timeout: la sincronización anterior no terminó en 5 minutos."] } };
+      } else {
+        return res.json({ success: false, error: "Ya hay una sincronización en curso. Esperá unos segundos.", running: true });
+      }
+    }
+
+    // Responder inmediatamente y procesar en background
+    lastPriceSync = { running: true, result: null, startedAt: Date.now() };
+    res.json({ success: true, message: "Sincronización iniciada en background. Consultá /api/starpos/pull-prices-status para ver el resultado.", background: true });
+
+    // Ejecutar en background
+    try {
+      const result = await pullPricesFromStarPOS();
+      lastPriceSync = { running: false, result };
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      lastPriceSync = { running: false, result: { success: false, error: msg, logs: [`❌ Error: ${msg}`] } };
+    }
+  });
+
+  // Endpoint para consultar el estado/resultado del último sync
+  router.get("/pull-prices-status", requireAdmin, async (_req, res) => {
+    if (lastPriceSync.running) {
+      const elapsed = lastPriceSync.startedAt ? Date.now() - lastPriceSync.startedAt : 0;
+      if (elapsed > SYNC_TIMEOUT_MS) {
+        // Auto-reset stuck state
+        lastPriceSync = { running: false, result: { success: false, error: "Sincronización expiró (timeout 5 min).", logs: ["⚠️ Timeout: la sincronización anterior no terminó en 5 minutos."] } };
+      } else {
+        return res.json({ running: true, elapsed: Math.round(elapsed / 1000), message: `Sincronización en curso... (${Math.round(elapsed / 1000)}s)` });
+      }
+    }
+    if (lastPriceSync.result) {
+      return res.json({ running: false, ...lastPriceSync.result });
+    }
+    return res.json({ running: false, message: "No hay sincronización reciente." });
+  });
+
+  // Pull prices con cron-token (para testing sin auth Firebase)
+  router.post("/pull-prices-cron", async (req, res) => {
+    const token = req.headers["x-cron-token"] || req.query.token;
+    const expected = process.env.CRON_SECRET_TOKEN;
+    if (!expected || token !== expected) {
+      return res.status(401).json({ success: false, error: "Token inválido" });
+    }
     try {
       const result = await pullPricesFromStarPOS();
       return res.json(result);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
-      return res.status(502).json({
-        success: false,
-        error: msg || "Error al sincronizar precios con StarPOS"
-      });
+      return res.status(502).json({ success: false, error: msg });
     }
   });
 
@@ -487,6 +539,87 @@ export function starposRoutes({ firestoreDb }: { firestoreDb: Firestore }): Rout
         error: msg || "Error en auto-sync",
         timestamp: new Date().toISOString()
       });
+    }
+  });
+
+  // Diagnóstico rápido de conexión StarPOS (protegido por cron token, no requiere Firebase auth)
+  router.get("/diagnose-quick", async (req, res) => {
+    const token = req.headers["x-cron-token"] || req.query.token;
+    const expected = process.env.CRON_SECRET_TOKEN;
+    if (!expected || token !== expected) {
+      return res.status(401).json({ success: false, error: "Token inválido" });
+    }
+
+    const serviceUrl = process.env.STARPOS_SERVICE_URL || "";
+    const userId = process.env.STARPOS_USER_ID || "";
+    const secret = process.env.STARPOS_SECRET || "";
+    const logs: string[] = [];
+
+    logs.push(`URL configurada: ${serviceUrl || "(vacía)"}`);
+    logs.push(`User ID: ${userId ? userId.substring(0, 4) + "..." : "(vacío)"}`);
+    logs.push(`Secret: ${secret ? "****" : "(vacío)"}`);
+
+    if (!serviceUrl) {
+      return res.json({ success: false, logs, error: "STARPOS_SERVICE_URL está vacía" });
+    }
+
+    // Test 1: ¿Se puede conectar al host?
+    try {
+      const controller = new AbortController();
+      const timeoutId = setTimeout(() => controller.abort(), 8000);
+      const authUrl = `${serviceUrl.replace(/\/$/, '')}/v1/Authenticate`;
+      logs.push(`Probando conexión a: ${authUrl}`);
+
+      const resp = await fetch(authUrl, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ userId, secret }),
+        signal: controller.signal,
+      });
+      clearTimeout(timeoutId);
+
+      const text = await resp.text();
+      logs.push(`Respuesta: HTTP ${resp.status}`);
+      logs.push(`Body (primeros 200 chars): ${text.substring(0, 200)}`);
+
+      if (resp.ok) {
+        // Test 2: Probar /v1/Products
+        try {
+          const ctrl2 = new AbortController();
+          const t2 = setTimeout(() => ctrl2.abort(), 15000);
+          const prodUrl = `${serviceUrl.replace(/\/$/, '')}/v1/Products`;
+          logs.push(`Probando: GET ${prodUrl} (15s timeout)...`);
+
+          const token2 = JSON.parse(text);
+          const bearerToken = token2?.token || token2?.access_token || token2;
+          const prodResp = await fetch(prodUrl, {
+            headers: { 'Authorization': `Bearer ${typeof bearerToken === 'string' ? bearerToken : JSON.stringify(bearerToken)}` },
+            signal: ctrl2.signal,
+          });
+          clearTimeout(t2);
+
+          logs.push(`Products: HTTP ${prodResp.status}, content-length: ${prodResp.headers.get('content-length') || 'unknown'}`);
+          const prodText = await prodResp.text();
+          logs.push(`Products body size: ${prodText.length} chars`);
+
+          try {
+            const parsed = JSON.parse(prodText);
+            const arr = Array.isArray(parsed) ? parsed : (parsed?.Products || parsed?.data || parsed?.payload || parsed?.items || []);
+            if (Array.isArray(arr)) {
+              const withStock = arr.filter((p: any) => p?.in_stock === true);
+              logs.push(`Total productos: ${arr.length}, con stock: ${withStock.length}`);
+            }
+          } catch { logs.push("No se pudo parsear Products JSON"); }
+        } catch (e2: any) {
+          logs.push(`Products falló: ${e2.message}`);
+        }
+      }
+
+      return res.json({ success: resp.ok, logs });
+    } catch (err: any) {
+      logs.push(`Error de conexión: ${err.message}`);
+      if (err.cause) logs.push(`Causa: ${JSON.stringify(err.cause)}`);
+      return res.json({ success: false, logs, error: err.message });
     }
   });
 
