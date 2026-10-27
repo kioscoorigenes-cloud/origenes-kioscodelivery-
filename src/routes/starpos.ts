@@ -484,7 +484,7 @@ export function starposRoutes({ firestoreDb }: { firestoreDb: Firestore }): Rout
         return res.status(500).json({ success: false, error: "No se pudo inicializar firebase-admin" });
       }
       const snapshot = await adminDb.collection('products').get();
-      const products = snapshot.docs.map(d => ({ id: d.id, ...(d.data() as { name?: string; price?: number }) }));
+      const products = snapshot.docs.map(d => ({ ...(d.data() as { name?: string; price?: number }), docId: d.id }));
 
       const results: string[] = [];
       for (const fix of fixes) {
@@ -493,8 +493,12 @@ export function starposRoutes({ firestoreDb }: { firestoreDb: Firestore }): Rout
           results.push(`❌ "${fix.name}" no encontrado en Firestore`);
           continue;
         }
+        if (!match.docId) {
+          results.push(`❌ "${fix.name}" encontrado pero sin ID de documento`);
+          continue;
+        }
         const oldPrice = match.price || 0;
-        await adminDb.collection('products').doc(match.id).set({ price: fix.price }, { merge: true });
+        await adminDb.collection('products').doc(match.docId).set({ price: fix.price }, { merge: true });
         results.push(`✅ "${match.name}": $${oldPrice} → $${fix.price}`);
       }
 
