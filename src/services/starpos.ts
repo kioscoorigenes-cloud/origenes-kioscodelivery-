@@ -1215,21 +1215,25 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
       'campari 750ml': ['campari 750', 'campari'],
       'vodka smirnoff 700ml': ['smirnoff 700', 'vodka smirnoff'],
       // Fixes para matches incorrectos:
-      'lays classic 90g': ['lays clasicas 90', 'lays original 90', 'lays clasic'],
+      'lays classic 90g': ['lays clasicas 90', 'lays original 90', 'lays 90'],
       'cheetos flamin hot 80g': ['cheetos flamin', 'cheetos picant'],
-      'oreo original 117g': ['oreo 117', 'oreo original 117'],
+      'oreo original 117g': ['oreo 117g', 'oreo original 117', 'galletitas oreo 117'],
       'criollitas 200g': ['criollitas 200', 'criollitas clasica 200'],
       'fideos matarazzo 500g': ['matarazzo 500', 'fideos matarazzo 500'],
-      'mayonesa hellmanns 250g': ['hellmanns clasica 250', 'hellmanns mayonesa 250'],
+      'mayonesa hellmanns 250g': ['hellmanns clasica 250', 'hellmanns mayonesa 250g'],
       'jamón cocido x100g': ['jamon cocido 100', 'jamon cocido natural'],
       'salame maggioni x100g': ['maggioni', 'salame maggioni'],
-      'queso pategrás x100g': ['pategras', 'queso pategras'],
+      'queso pategrás x100g': ['pategras 100', 'pategras x 100', 'queso pategras x100'],
       'queso cremoso x100g': ['queso cremoso 100', 'cremoso 100'],
       'puré de tomates arcor 520g': ['pure tomate arcor 520', 'tomates arcor 520'],
       'atún al natural gomes da costa 170g': ['gomes da costa 170', 'atun gomes 170'],
       'vino trapiche malbec 750ml': ['trapiche malbec 750', 'vino trapiche malbec'],
       'shampoo elvive 400ml': ['elvive 400', 'loreal elvive 400'],
       'detergente magistral 750ml': ['magistral 750'],
+      'yogur ser frutilla 190g': ['yogur ser frutilla', 'ser frutilla 190'],
+      'yerba mate taragüi 500g': ['taragui 500', 'yerba taragui 500'],
+      'pizza tia maruca 350g': ['tia maruca pizza', 'pizza tia maruca 350'],
+      'cerveza corona porrón 330ml': ['corona 330ml', 'corona porron 330'],
     };
 
     // Productos que NUNCA deben matchear por fuzzy (el fuzzy los confunde con otro producto).
@@ -1248,6 +1252,11 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
       'shampoo elvive 400ml',
       'detergente magistral 750ml',
       'oreo original 117g',
+      'yogur ser frutilla 190g',
+      'yerba mate taragüi 500g',
+      'lays classic 90g',
+      'pizza tia maruca 350g',
+      'cerveza corona porrón 330ml',
     ]);
 
     // Función de override: busca en starposItems usando los patterns del mapeo manual
