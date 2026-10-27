@@ -1302,7 +1302,7 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
       const match = manualMatch || (fuzzyBlocklist.has(fp.name.toLowerCase()) ? null : findBestMatch(fp.name));
       if (!match) {
         noMatchCount++;
-        if (noMatchNames.length < 10) noMatchNames.push(fp.name);
+        if (noMatchNames.length < 50) noMatchNames.push(fp.name);
         continue;
       }
       const starposPrice = match.price;
@@ -1342,6 +1342,21 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
     result.logs.push(`📊 Match por nombre: ${samePrice + updatedCount} coincidieron, ${noMatchCount} sin match.`);
     if (noMatchNames.length > 0) {
       result.logs.push(`   Sin match (primeros ${noMatchNames.length}): ${noMatchNames.join(', ')}`);
+    }
+
+    // DEBUG: Para cada producto sin match, buscar candidatos en StarPOS
+    for (const nm of noMatchNames) {
+      const norm = normalizeName(nm);
+      const words = norm.split(' ').filter(w => w.length > 2);
+      const candidates: string[] = [];
+      for (const sp of starposItems) {
+        const matchedWords = words.filter(w => sp.normName.includes(w));
+        if (matchedWords.length >= 1) {
+          candidates.push(`${sp.name} ($${sp.price})`);
+          if (candidates.length >= 3) break;
+        }
+      }
+      result.logs.push(`   🔍 "${nm}" → candidatos: ${candidates.length > 0 ? candidates.join(' | ') : 'NINGUNO'}`);
     }
     result.logs.push(`🎉 Sincronización de precios finalizada. Actualizados: ${updatedCount}, precio igual: ${samePrice}, sin match: ${noMatchCount}.`);
   } catch (error: unknown) {
