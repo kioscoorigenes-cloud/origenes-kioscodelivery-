@@ -954,7 +954,7 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
     // La API de StarPOS no expone barcodes. Se matchea por nombre fuzzy.
     const normalizeName = (n: string) => n.toLowerCase().replace(/[^a-záéíóúñü0-9\s]/g, '').replace(/\s+/g, ' ').trim();
 
-    const starposItems: { name: string; normName: string; price: number }[] = [];
+    const starposItems: { name: string; normName: string; price: number; inStock: boolean }[] = [];
     for (const sp of validProducts) {
       if (!sp || !sp.name) continue;
 
@@ -974,7 +974,7 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
       // Filtrar precios absurdamente bajos: en Argentina (2024+) nada del kiosco cuesta
       // menos de $500. StarPOS tiene miles de productos con precios basura.
       if (price !== null && price >= 500) {
-        starposItems.push({ name: sp.name, normName: normalizeName(sp.name), price });
+        starposItems.push({ name: sp.name, normName: normalizeName(sp.name), price, inStock: sp.in_stock !== false });
       }
     }
 
@@ -1040,7 +1040,7 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
     const generic = new Set(['el','la','los','las','de','del','con','sin','en','por','para','un','una','pack','x','al','natural','clasica','clasico','classic','original','ml','1l','500ml','1kg','500g','200g','100g','250g','90g','80g','60g','117g','135g','190g','400g','520g','900ml','170g']);
 
     // Pre-computar datos de StarPOS para evitar re-calcular en cada iteración
-    const exactMap = new Map<string, { price: number; name: string }>();
+    const exactMap = new Map<string, { price: number; name: string; inStock: boolean }>();
     // Índice invertido: palabra → índices de starposItems que la contienen
     const wordIndex = new Map<string, number[]>();
     // Pre-computar spWords para cada item
@@ -1048,7 +1048,7 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
 
     for (let i = 0; i < starposItems.length; i++) {
       const sp = starposItems[i];
-      exactMap.set(sp.normName, { price: sp.price, name: sp.name });
+      exactMap.set(sp.normName, { price: sp.price, name: sp.name, inStock: sp.inStock });
       const spWords = sp.normName.split(' ').filter(w => w.length > 1 && !generic.has(w));
       precomputedSpWords.push(spWords);
       // Indexar cada palabra
@@ -1061,12 +1061,12 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
     result.logs.push(`Índice construido: ${exactMap.size} nombres, ${wordIndex.size} palabras únicas.`);
 
     // Función de fuzzy match optimizada
-    function findBestMatch(appName: string): { price: number; spName: string } | null {
+    function findBestMatch(appName: string): { price: number; spName: string; inStock: boolean } | null {
       const norm = normalizeName(appName);
 
       // 1. Exact match (O(1) con Map)
       const exact = exactMap.get(norm);
-      if (exact) return { price: exact.price, spName: exact.name };
+      if (exact) return { price: exact.price, spName: exact.name, inStock: exact.inStock };
 
       const appWords = norm.split(' ').filter(w => w.length > 1 && !generic.has(w));
       if (appWords.length === 0) return null;
@@ -1094,14 +1094,14 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
         // Intentar contención solo si el nombre es corto
         if (norm.length <= 15) {
           const contained = starposItems.find(sp => sp.normName.includes(norm) || norm.includes(sp.normName));
-          if (contained) return { price: contained.price, spName: contained.name };
+          if (contained) return { price: contained.price, spName: contained.name, inStock: contained.inStock };
         }
         return null;
       }
 
       // 3. Scoring solo sobre candidatos
       let bestScore = 0;
-      let bestMatch: { price: number; spName: string } | null = null;
+      let bestMatch: { price: number; spName: string; inStock: boolean } | null = null;
       let bestCount = 0;
 
       for (const idx of candidateSet) {
@@ -1124,7 +1124,7 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
 
         if (score > bestScore) {
           bestScore = score;
-          bestMatch = { price: sp.price, spName: sp.name };
+          bestMatch = { price: sp.price, spName: sp.name, inStock: sp.inStock };
           bestCount = 1;
         } else if (score === bestScore && score > 0) {
           bestCount++;
@@ -1161,7 +1161,7 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
         const sizeMatch = norm.match(/(\d+)\s*(ml|l|g|kg)/);
         if (sizeMatch) {
           const sizeStr = sizeMatch[1] + sizeMatch[2];
-          let sizedBest: { price: number; spName: string } | null = null;
+          let sizedBest: { price: number; spName: string; inStock: boolean } | null = null;
           let sizedCount = 0;
           for (const idx of candidateSet) {
             const sp = starposItems[idx];
@@ -1179,7 +1179,7 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
               if (norm.includes(sw)) score += sw.length;
             }
             if (score === bestScore && sp.normName.includes(sizeStr)) {
-              sizedBest = { price: sp.price, spName: sp.name };
+              sizedBest = { price: sp.price, spName: sp.name, inStock: sp.inStock };
               sizedCount++;
             }
           }
@@ -1308,20 +1308,20 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
     ]);
 
     // Función de override: busca en starposItems usando los patterns del mapeo manual
-    function findManualOverride(appName: string): { price: number; spName: string } | null {
+    function findManualOverride(appName: string): { price: number; spName: string; inStock: boolean } | null {
       const key = appName.toLowerCase();
       const patterns = manualOverrides[key];
       if (!patterns) return null;
       for (const pattern of patterns) {
         const found = starposItems.find(sp => sp.normName.includes(pattern));
-        if (found) return { price: found.price, spName: found.name };
+        if (found) return { price: found.price, spName: found.name, inStock: found.inStock };
       }
       return null;
     }
 
     // Leer productos de Firestore con admin SDK (no consume cuota del cliente).
     // Fallback a DEFAULT_PRODUCTS si admin no está disponible.
-    let firestoreProducts: { id: string; name: string; price: number }[] = [];
+    let firestoreProducts: { id: string; name: string; price: number; inStock?: boolean }[] = [];
 
     if (adminDb) {
       try {
@@ -1332,7 +1332,8 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
             return {
               id: d.id,
               name: data.name as string || '',
-              price: typeof data.price === 'number' ? data.price : 0
+              price: typeof data.price === 'number' ? data.price : 0,
+              inStock: data.inStock !== false
             };
           })
           .filter(p => p.name); // solo los que tienen nombre
@@ -1365,6 +1366,7 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
     let noMatchCount = 0;
     let samePrice = 0;
     let priceDropCount = 0;
+    let stockChangedCount = 0;
     const noMatchNames: string[] = [];
     const priceDropNames: string[] = [];
     const updatePromises: Promise<void>[] = [];
@@ -1385,9 +1387,21 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
       }
       const starposPrice = match.price;
 
-      // Solo actualizar si el precio cambió
+      // Si el precio no cambió, verificar si cambió el stock
       if (Math.abs(starposPrice - fp.price) < 0.01) {
         samePrice++;
+        // Aunque el precio sea igual, si el stock cambió hay que actualizar
+        const currentInStock = fp.inStock !== false; // default true si no existe
+        if (match.inStock !== currentInStock) {
+          const stockUpdateFn = adminDb
+            ? adminDb.collection('products').doc(fp.id).set({ inStock: match.inStock }, { merge: true })
+            : setDoc(doc(db, 'products', fp.id), { inStock: match.inStock }, { merge: true });
+          updatePromises.push(stockUpdateFn.then(() => {}));
+          stockChangedCount++;
+          if (stockChangedCount <= 10) {
+            result.logs.push(`   📦 "${fp.name}": stock ${currentInStock ? '✅→❌' : '❌→✅'}`);
+          }
+        }
         skippedCount++;
         continue;
       }
@@ -1404,11 +1418,12 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
         continue;
       }
 
-      // Actualizar SOLO el precio — no tocar nada más (fotos, nombre, categoría, stock)
+      // Actualizar precio y stock desde StarPOS — no tocar nada más (fotos, nombre, categoría)
       // Usar set+merge en vez de update para no fallar si el doc no existe aún
+      const updateData: { price: number; inStock: boolean } = { price: starposPrice, inStock: match.inStock };
       const updateFn = adminDb
-        ? adminDb.collection('products').doc(fp.id).set({ price: starposPrice }, { merge: true })
-        : setDoc(doc(db, 'products', fp.id), { price: starposPrice }, { merge: true });
+        ? adminDb.collection('products').doc(fp.id).set(updateData, { merge: true })
+        : setDoc(doc(db, 'products', fp.id), updateData, { merge: true });
       updatePromises.push(updateFn.then(() => {}));
 
       updatedCount++;
@@ -1438,7 +1453,10 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
       priceDropNames.forEach(n => result.logs.push(`   ⛔ ${n}`));
     }
 
-    result.logs.push(`🎉 Sincronización de precios finalizada. Actualizados: ${updatedCount}, precio igual: ${samePrice}, sin match: ${noMatchCount}, precio bajó (bloqueados): ${priceDropCount}.`);
+    if (stockChangedCount > 0) {
+      result.logs.push(`📦 Stock actualizado en ${stockChangedCount} productos (precio igual pero stock cambió).`);
+    }
+    result.logs.push(`🎉 Sincronización finalizada. Precios actualizados: ${updatedCount}, precio igual: ${samePrice}, stock cambió: ${stockChangedCount}, sin match: ${noMatchCount}, precio bajó (bloqueados): ${priceDropCount}.`);
   } catch (error: unknown) {
     result.success = false;
     const msg = error instanceof Error ? error.message : String(error);
