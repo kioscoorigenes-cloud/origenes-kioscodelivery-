@@ -980,7 +980,6 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
 
     result.logs.push(`${starposItems.length} productos con precio válido en StarPOS.`);
     // DEBUG: mostrar primeros 10 nombres StarPOS normalizados
-    result.logs.push(`DEBUG StarPOS nombres (10): ${starposItems.slice(0, 10).map(s => `"${s.normName}"`).join(', ')}`);
 
     // Mapa de keywords de marca: app name keyword → posibles keywords en StarPOS
     const brandAliases: Record<string, string[]> = {
@@ -1277,14 +1276,42 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
       return null;
     }
 
-    // Usar DEFAULT_PRODUCTS como referencia en vez de leer toda la colección Firestore
-    // (leer 2000+ docs agota la cuota gratuita de Firestore)
-    const { DEFAULT_PRODUCTS } = await import('../data');
-    const firestoreProducts = DEFAULT_PRODUCTS.map(p => ({
-      id: String(p.id),
-      name: p.name,
-      price: p.price
-    }));
+    // Leer productos de Firestore con admin SDK (no consume cuota del cliente).
+    // Fallback a DEFAULT_PRODUCTS si admin no está disponible.
+    let firestoreProducts: { id: string; name: string; price: number }[] = [];
+
+    if (adminDb) {
+      try {
+        const snapshot = await adminDb.collection('products').get();
+        firestoreProducts = snapshot.docs
+          .map(d => {
+            const data = d.data();
+            return {
+              id: d.id,
+              name: data.name as string || '',
+              price: typeof data.price === 'number' ? data.price : 0
+            };
+          })
+          .filter(p => p.name); // solo los que tienen nombre
+        result.logs.push(`📂 Leídos ${firestoreProducts.length} productos de Firestore (admin SDK).`);
+      } catch (e: any) {
+        result.logs.push(`⚠️ Error leyendo Firestore: ${e.message}. Usando DEFAULT_PRODUCTS.`);
+        const { DEFAULT_PRODUCTS } = await import('../data');
+        firestoreProducts = DEFAULT_PRODUCTS.map(p => ({
+          id: String(p.id),
+          name: p.name,
+          price: p.price
+        }));
+      }
+    } else {
+      result.logs.push(`⚠️ Admin SDK no disponible. Usando DEFAULT_PRODUCTS (${53} productos).`);
+      const { DEFAULT_PRODUCTS } = await import('../data');
+      firestoreProducts = DEFAULT_PRODUCTS.map(p => ({
+        id: String(p.id),
+        name: p.name,
+        price: p.price
+      }));
+    }
 
     result.logs.push(`${firestoreProducts.length} productos de la app para sincronizar.`);
     result.logs.push(`Nombres (5): ${firestoreProducts.slice(0, 5).map(f => `"${normalizeName(f.name)}"`).join(', ')}`);
@@ -1308,7 +1335,7 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
       const match = manualMatch || (fuzzyBlocklist.has(fp.name.toLowerCase()) ? null : findBestMatch(fp.name));
       if (!match) {
         noMatchCount++;
-        if (noMatchNames.length < 50) noMatchNames.push(fp.name);
+        if (noMatchNames.length < 15) noMatchNames.push(fp.name);
         continue;
       }
       const starposPrice = match.price;
@@ -1350,20 +1377,6 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
       result.logs.push(`   Sin match (primeros ${noMatchNames.length}): ${noMatchNames.join(', ')}`);
     }
 
-    // DEBUG: Para cada producto sin match, buscar candidatos en StarPOS
-    for (const nm of noMatchNames) {
-      const norm = normalizeName(nm);
-      const words = norm.split(' ').filter(w => w.length > 2);
-      const candidates: string[] = [];
-      for (const sp of starposItems) {
-        const matchedWords = words.filter(w => sp.normName.includes(w));
-        if (matchedWords.length >= 1) {
-          candidates.push(`${sp.name} ($${sp.price})`);
-          if (candidates.length >= 3) break;
-        }
-      }
-      result.logs.push(`   🔍 "${nm}" → candidatos: ${candidates.length > 0 ? candidates.join(' | ') : 'NINGUNO'}`);
-    }
     result.logs.push(`🎉 Sincronización de precios finalizada. Actualizados: ${updatedCount}, precio igual: ${samePrice}, sin match: ${noMatchCount}.`);
   } catch (error: unknown) {
     result.success = false;
