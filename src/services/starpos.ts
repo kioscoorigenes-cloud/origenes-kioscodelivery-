@@ -971,9 +971,9 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
         }
       }
 
-      // Filtrar precios absurdamente bajos: en Argentina nada cuesta menos de $100 (2024+).
-      // StarPOS tiene productos con precios basura ($12, $29) que ensucian el sync.
-      if (price !== null && price >= 100) {
+      // Filtrar precios absurdamente bajos: en Argentina (2024+) nada del kiosco cuesta
+      // menos de $500. StarPOS tiene miles de productos con precios basura.
+      if (price !== null && price >= 500) {
         starposItems.push({ name: sp.name, normName: normalizeName(sp.name), price });
       }
     }
@@ -1215,26 +1215,39 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
       'campari 750ml': ['campari 750', 'campari'],
       'vodka smirnoff 700ml': ['smirnoff 700', 'vodka smirnoff'],
       // Fixes para matches incorrectos:
-      'lays classic 90g': ['lays clasicas 90', 'lays original 90', 'lays papas clasicas'],
-      'cheetos flamin hot 80g': ['cheetos flamin', 'cheetos picante'],
-      'oreo original 117g': ['oreo original', 'oreo clasica'],
-      'criollitas 200g': ['criollitas clasicas 200', 'criollitas original 200'],
-      'fideos matarazzo 500g': ['matarazzo spaghetti 500', 'matarazzo fideos 500', 'fideos matarazzo 500'],
-      'mayonesa hellmanns 250g': ['hellmanns mayonesa clasica 250', 'hellmanns clasica 250', 'mayonesa hellmanns 250'],
+      'lays classic 90g': ['lays clasicas 90', 'lays original 90', 'lays clasic'],
+      'cheetos flamin hot 80g': ['cheetos flamin', 'cheetos picant'],
+      'oreo original 117g': ['oreo 117', 'oreo original 117'],
+      'criollitas 200g': ['criollitas 200', 'criollitas clasica 200'],
+      'fideos matarazzo 500g': ['matarazzo 500', 'fideos matarazzo 500'],
+      'mayonesa hellmanns 250g': ['hellmanns clasica 250', 'hellmanns mayonesa 250'],
       'jamón cocido x100g': ['jamon cocido 100', 'jamon cocido natural'],
-      'salame maggioni x100g': ['maggioni salame', 'salame maggioni'],
-      'queso pategrás x100g': ['pategras 100', 'queso pategras'],
-      'queso cremoso x100g': ['queso cremoso 100', 'cremoso 100g'],
+      'salame maggioni x100g': ['maggioni', 'salame maggioni'],
+      'queso pategrás x100g': ['pategras', 'queso pategras'],
+      'queso cremoso x100g': ['queso cremoso 100', 'cremoso 100'],
+      'puré de tomates arcor 520g': ['pure tomate arcor 520', 'tomates arcor 520'],
+      'atún al natural gomes da costa 170g': ['gomes da costa 170', 'atun gomes 170'],
+      'vino trapiche malbec 750ml': ['trapiche malbec 750', 'vino trapiche malbec'],
+      'shampoo elvive 400ml': ['elvive 400', 'loreal elvive 400'],
+      'detergente magistral 750ml': ['magistral 750'],
     };
 
-    // Productos que NUNCA deben matchear por fuzzy (el fuzzy los confunde)
-    // Si no hay override manual, devuelve null en vez de un match incorrecto.
+    // Productos que NUNCA deben matchear por fuzzy (el fuzzy los confunde con otro producto).
+    // Si no hay override manual que matchee, devuelve null → sin match (mejor que un match malo).
     const fuzzyBlocklist = new Set([
       'jamón cocido x100g',
       'salame maggioni x100g',
       'queso pategrás x100g',
       'queso cremoso x100g',
       'leche la serenísima 1l',
+      'cheetos flamin hot 80g',
+      'mayonesa hellmanns 250g',
+      'puré de tomates arcor 520g',
+      'atún al natural gomes da costa 170g',
+      'vino trapiche malbec 750ml',
+      'shampoo elvive 400ml',
+      'detergente magistral 750ml',
+      'oreo original 117g',
     ]);
 
     // Función de override: busca en starposItems usando los patterns del mapeo manual
