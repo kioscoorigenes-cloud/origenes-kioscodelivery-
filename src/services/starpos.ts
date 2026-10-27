@@ -1239,6 +1239,33 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
       'paleta ahumada x100g': ['paleta ahumada'],
       'aceite de girasol natura 900ml': ['aceite natura 900', 'natura 900'],
       'azúcar ledesma clásica 1kg': ['azucar ledesma', 'ledesma 1kg'],
+      // Variantes con nombres largos en Firestore
+      'bebida energizante monster energy 473ml': ['monster energy', 'monster 473'],
+      'bebida gatorade naranja 500ml': ['gatorade naranja', 'gatorade 500'],
+      'vodka smirnoff triple destilado red 700ml': ['smirnoff 700', 'vodka smirnoff'],
+      'papas fritas lays clásicas 90g': ['lays clasicas 90', 'lays original 90', 'lays 90'],
+      'cheetos horneados queso 80g': ['cheetos horneados', 'cheetos queso 80'],
+      'coca-cola original sabor único 2.25l': ['coca cola 2.25', 'coca cola 2 25', 'coca-cola 2.25', 'coca cola 225'],
+      'cerveza quilmes clásica 1l': ['quilmes clasica 1', 'quilmes 1 litro', 'quilmes 1l', 'quilmes clasica 1000'],
+      'cerveza corona extra 710ml': ['corona extra 710', 'corona 710'],
+      'cerveza imperial golden 1l': ['imperial golden 1', 'imperial 1l', 'imperial golden 1000', 'imperial 1 litro'],
+      'cerveza stella artois 975ml': ['stella artois 975', 'stella 975'],
+      'aperitivo campari milano bitter 750ml': ['campari 750', 'campari milano', 'campari bitter'],
+      'aperitivo gancia americano 950ml': ['gancia americano', 'gancia 950'],
+      'gaseosa fanta naranja 1.5l': ['fanta naranja 1.5', 'fanta 1.5', 'fanta naranja 1500'],
+      'alfajor guaymallén negro ddl': ['guaymalien', 'guaymallen negro', 'guaymallen ddl'],
+      'alfajor milka oreo triple 135g': ['milka oreo triple', 'milka oreo 135'],
+      'doritos mega queso nacho 150g': ['doritos mega queso', 'doritos nacho 150', 'doritos mega 150'],
+      'cubanito mantecol': ['cubanito mantecol', 'mantecol cubanito'],
+      'arcor cracker 112g': ['arcor cracker 112', 'cracker arcor 112'],
+      'bastoncitos krachitos 60g': ['krachitos 60', 'bastoncitos krachitos'],
+      'lenguetazo manzana acida': ['lenguetazo manzana'],
+      'lenguetazo tutti-frutti': ['lenguetazo tutti', 'lenguetazo tutti frutti'],
+      'noquis la salteña': ['noquis saltena', 'noquis la saltena', 'ñoquis saltena'],
+      'plin x 2 cremoso': ['plin cremoso', 'plin x 2'],
+      'shampoo sedal sachet': ['sedal sachet', 'shampoo sedal'],
+      'bananita mogul': ['bananita mogul', 'mogul bananita'],
+      'bubbaloo rosa': ['bubbaloo rosa', 'bubbaloo'],
     };
 
     // Productos que NUNCA deben matchear por fuzzy (el fuzzy los confunde con otro producto).
@@ -1262,6 +1289,19 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
       'lays classic 90g',
       'pizza tia maruca 350g',
       'cerveza corona porrón 330ml',
+      'cerveza quilmes clásica 1l',
+      'cerveza corona extra 710ml',
+      'cerveza imperial golden 1l',
+      'cerveza stella artois 975ml',
+      'coca-cola original sabor único 2.25l',
+      'gaseosa fanta naranja 1.5l',
+      'bebida energizante monster energy 473ml',
+      'bebida gatorade naranja 500ml',
+      'vodka smirnoff triple destilado red 700ml',
+      'papas fritas lays clásicas 90g',
+      'cheetos horneados queso 80g',
+      'aperitivo campari milano bitter 750ml',
+      'aperitivo gancia americano 950ml',
     ]);
 
     // Función de override: busca en starposItems usando los patterns del mapeo manual
@@ -1335,7 +1375,7 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
       const match = manualMatch || (fuzzyBlocklist.has(fp.name.toLowerCase()) ? null : findBestMatch(fp.name));
       if (!match) {
         noMatchCount++;
-        if (noMatchNames.length < 200) noMatchNames.push(fp.name);
+        if (noMatchNames.length < 25) noMatchNames.push(fp.name);
         continue;
       }
       const starposPrice = match.price;
