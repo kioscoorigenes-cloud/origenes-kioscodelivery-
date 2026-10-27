@@ -1335,7 +1335,7 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
       const match = manualMatch || (fuzzyBlocklist.has(fp.name.toLowerCase()) ? null : findBestMatch(fp.name));
       if (!match) {
         noMatchCount++;
-        if (noMatchNames.length < 15) noMatchNames.push(fp.name);
+        if (noMatchNames.length < 200) noMatchNames.push(fp.name);
         continue;
       }
       const starposPrice = match.price;
