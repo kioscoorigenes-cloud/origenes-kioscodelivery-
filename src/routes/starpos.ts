@@ -463,6 +463,49 @@ export function starposRoutes({ firestoreDb }: { firestoreDb: Firestore }): Rout
   });
 
   // ==========================================
+  // FIX-PRICES: Corregir precios específicos manualmente
+  // Protegido por token secreto. Body: { fixes: [{name: "...", price: 1234}] }
+  // ==========================================
+  router.post("/fix-prices", async (req, res) => {
+    const token = req.headers["x-cron-token"] || req.query.token;
+    const expected = process.env.CRON_SECRET_TOKEN;
+    if (!expected || token !== expected) {
+      return res.status(401).json({ success: false, error: "Token inválido" });
+    }
+    try {
+      const { fixes } = req.body as { fixes: { name: string; price: number }[] };
+      if (!fixes || !Array.isArray(fixes) || fixes.length === 0) {
+        return res.status(400).json({ success: false, error: "Body debe ser { fixes: [{name, price}] }" });
+      }
+
+      // Leer todos los productos de Firestore
+      const adminDb = getAdminFirestore();
+      if (!adminDb) {
+        return res.status(500).json({ success: false, error: "No se pudo inicializar firebase-admin" });
+      }
+      const snapshot = await adminDb.collection('products').get();
+      const products = snapshot.docs.map(d => ({ id: d.id, ...(d.data() as { name?: string; price?: number }) }));
+
+      const results: string[] = [];
+      for (const fix of fixes) {
+        const match = products.find(p => p.name?.toLowerCase() === fix.name.toLowerCase());
+        if (!match) {
+          results.push(`❌ "${fix.name}" no encontrado en Firestore`);
+          continue;
+        }
+        const oldPrice = match.price || 0;
+        await adminDb.collection('products').doc(match.id).set({ price: fix.price }, { merge: true });
+        results.push(`✅ "${match.name}": $${oldPrice} → $${fix.price}`);
+      }
+
+      return res.json({ success: true, results });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return res.status(500).json({ success: false, error: msg });
+    }
+  });
+
+  // ==========================================
   // AUTO-SYNC DIARIO (llamado por cron/scheduled task)
   // Protegido por token secreto en lugar de auth de admin
   // ==========================================
