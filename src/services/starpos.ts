@@ -1258,14 +1258,14 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
       'doritos mega queso nacho 150g': ['doritos mega queso', 'doritos nacho 150', 'doritos mega 150'],
       'cubanito mantecol': ['cubanito mantecol', 'mantecol cubanito'],
       'arcor cracker 112g': ['arcor cracker 112', 'cracker arcor 112'],
-      'bastoncitos krachitos 60g': ['krachitos 60', 'bastoncitos krachitos'],
+      'bastoncitos krachitos 60g': ['bastoncitos krachitos 60'],
       'lenguetazo manzana acida': ['lenguetazo manzana'],
       'lenguetazo tutti-frutti': ['lenguetazo tutti', 'lenguetazo tutti frutti'],
-      'noquis la salteña': ['noquis saltena', 'noquis la saltena', 'ñoquis saltena'],
+      // 'noquis la salteña' — bloqueado: StarPOS tiene precio $1600 (sospechoso, bajó de $4200)
       'plin x 2 cremoso': ['plin cremoso', 'plin x 2'],
-      'shampoo sedal sachet': ['sedal sachet', 'shampoo sedal'],
+      // 'shampoo sedal sachet' — bloqueado: StarPOS matcheó SEDAL X340ML (producto incorrecto, sachet ≠ botella)
       'bananita mogul': ['bananita mogul', 'mogul bananita'],
-      'bubbaloo rosa': ['bubbaloo rosa', 'bubbaloo'],
+      // 'bubbaloo rosa' — bloqueado: StarPOS matcheó BUBBALOO HUELLITAS FRUTILLA (producto incorrecto)
     };
 
     // Productos que NUNCA deben matchear por fuzzy (el fuzzy los confunde con otro producto).
@@ -1302,6 +1302,9 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
       'cheetos horneados queso 80g',
       'aperitivo campari milano bitter 750ml',
       'aperitivo gancia americano 950ml',
+      'shampoo sedal sachet',
+      'bubbaloo rosa',
+      'noquis la salteña',
     ]);
 
     // Función de override: busca en starposItems usando los patterns del mapeo manual
@@ -1361,7 +1364,9 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
     let skippedCount = 0;
     let noMatchCount = 0;
     let samePrice = 0;
+    let priceDropCount = 0;
     const noMatchNames: string[] = [];
+    const priceDropNames: string[] = [];
     const updatePromises: Promise<void>[] = [];
 
     for (const fp of firestoreProducts) {
@@ -1384,6 +1389,18 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
       if (Math.abs(starposPrice - fp.price) < 0.01) {
         samePrice++;
         skippedCount++;
+        continue;
+      }
+
+      // PROTECCIÓN: En Argentina los precios solo suben. Si StarPOS tiene un precio
+      // menor al actual, probablemente el match es incorrecto (otro producto).
+      // Skipear y loggear para revisión manual.
+      if (starposPrice < fp.price && fp.price > 0) {
+        skippedCount++;
+        if (priceDropNames.length < 15) {
+          priceDropNames.push(`${fp.name}: $${fp.price} → $${starposPrice} (SP: ${match.spName})`);
+        }
+        priceDropCount++;
         continue;
       }
 
@@ -1416,8 +1433,12 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
     if (noMatchNames.length > 0) {
       result.logs.push(`   Sin match (primeros ${noMatchNames.length}): ${noMatchNames.join(', ')}`);
     }
+    if (priceDropCount > 0) {
+      result.logs.push(`⚠️ ${priceDropCount} productos con precio StarPOS MENOR al actual (posible match incorrecto, no actualizados):`);
+      priceDropNames.forEach(n => result.logs.push(`   ⛔ ${n}`));
+    }
 
-    result.logs.push(`🎉 Sincronización de precios finalizada. Actualizados: ${updatedCount}, precio igual: ${samePrice}, sin match: ${noMatchCount}.`);
+    result.logs.push(`🎉 Sincronización de precios finalizada. Actualizados: ${updatedCount}, precio igual: ${samePrice}, sin match: ${noMatchCount}, precio bajó (bloqueados): ${priceDropCount}.`);
   } catch (error: unknown) {
     result.success = false;
     const msg = error instanceof Error ? error.message : String(error);
