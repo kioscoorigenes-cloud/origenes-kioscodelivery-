@@ -1196,7 +1196,7 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
     const manualOverrides: Record<string, string[]> = {
       // app name (lowercase) → posibles nombres StarPOS (lowercase substrings a buscar)
       'coca-cola 500ml': ['coca cola 500', 'coca-cola 500'],
-      'monster energy 473ml': ['monster 473', 'monster energy 473'],
+      'monster energy 473ml': ['monster energy', 'monster 473'],
       'gatorade naranja 500ml': ['gatorade naranja'],
       'leche la serenísima 1l': ['leche entera serenisima', 'leche serenisima 1l', 'la serenisima leche 1'],
       'palitos de la selva 60g': ['palitos de la selva'],
@@ -1234,6 +1234,12 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
       'yerba mate taragüi 500g': ['taragui 500', 'yerba taragui 500'],
       'pizza tia maruca 350g': ['tia maruca pizza', 'pizza tia maruca 350'],
       'cerveza corona porrón 330ml': ['corona 330ml', 'corona porron 330'],
+      'toblerone 100g': ['toblerone'],
+      'mentitas peppermint': ['mentitas felfort', 'drf mentitas menta'],
+      'harina de trigo blancaflor 1kg': ['harina blancaflor'],
+      'paleta ahumada x100g': ['paleta ahumada'],
+      'aceite de girasol natura 900ml': ['aceite natura 900', 'natura 900'],
+      'azúcar ledesma clásica 1kg': ['azucar ledesma', 'ledesma 1kg'],
     };
 
     // Productos que NUNCA deben matchear por fuzzy (el fuzzy los confunde con otro producto).
