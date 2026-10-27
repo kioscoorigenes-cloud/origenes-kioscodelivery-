@@ -971,7 +971,9 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
         }
       }
 
-      if (price !== null && price > 0) {
+      // Filtrar precios absurdamente bajos: en Argentina nada cuesta menos de $100 (2024+).
+      // StarPOS tiene productos con precios basura ($12, $29) que ensucian el sync.
+      if (price !== null && price >= 100) {
         starposItems.push({ name: sp.name, normName: normalizeName(sp.name), price });
       }
     }
@@ -1137,11 +1139,11 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
       // Verificar tamaño: si la app tiene un tamaño, el match debe tenerlo también
       const appSize = norm.match(/(\d+(?:[.,]\d+)?)\s*(ml|l|lts|lt|g|gr|grs|kg)/);
       if (bestMatch && bestScore >= minScore && bestCount === 1) {
-        // Verificar que no sea un match espurio: al menos 1 palabra de la app debe estar en el match
+        // Verificar que no sea un match espurio: al menos 2 palabras de la app deben estar en el match
         // (Esto evita "Leche La Serenísima" → "DULCE DE LECHE" donde solo "leche" matchea)
         const matchNormFull = normalizeName(bestMatch.spName);
         const appInMatch = appWords.filter(w => matchNormFull.includes(w)).length;
-        if (appInMatch < 1) return null;
+        if (appInMatch < 2) return null;
 
         if (appSize) {
           const appSizeNorm = appSize[1].replace(',', '.') + appSize[2].replace(/^(lts|lt)$/, 'l').replace(/^(gr|grs)$/, 'g');
@@ -1194,10 +1196,10 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
     const manualOverrides: Record<string, string[]> = {
       // app name (lowercase) → posibles nombres StarPOS (lowercase substrings a buscar)
       'coca-cola 500ml': ['coca cola 500', 'coca-cola 500'],
-      'monster energy 473ml': ['monster 473', 'monster energy'],
-      'gatorade naranja 500ml': ['gatorade 500', 'gatorade naranja'],
-      'leche la serenísima 1l': ['leche entera serenisima', 'leche serenisima 1', 'la serenisima leche'],
-      'palitos de la selva 60g': ['palitos selva', 'palitos de la selva'],
+      'monster energy 473ml': ['monster 473', 'monster energy 473'],
+      'gatorade naranja 500ml': ['gatorade naranja'],
+      'leche la serenísima 1l': ['leche entera serenisima', 'leche serenisima 1l', 'la serenisima leche 1'],
+      'palitos de la selva 60g': ['palitos de la selva'],
       'facturas surtidas x4': ['facturas surtidas', 'facturas x4', 'factura surtida'],
       'medialunas x6': ['medialunas x6', 'medialuna x6', 'medialunas x 6'],
       'shampoo elvive 400ml': ['elvive 400', 'shampoo elvive'],
@@ -1212,7 +1214,28 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
       'pote helado frigor ddl 1l': ['frigor ddl', 'helado frigor', 'frigor dulce'],
       'campari 750ml': ['campari 750', 'campari'],
       'vodka smirnoff 700ml': ['smirnoff 700', 'vodka smirnoff'],
+      // Fixes para matches incorrectos:
+      'lays classic 90g': ['lays clasicas 90', 'lays original 90', 'lays papas clasicas'],
+      'cheetos flamin hot 80g': ['cheetos flamin', 'cheetos picante'],
+      'oreo original 117g': ['oreo original', 'oreo clasica'],
+      'criollitas 200g': ['criollitas clasicas 200', 'criollitas original 200'],
+      'fideos matarazzo 500g': ['matarazzo spaghetti 500', 'matarazzo fideos 500', 'fideos matarazzo 500'],
+      'mayonesa hellmanns 250g': ['hellmanns mayonesa clasica 250', 'hellmanns clasica 250', 'mayonesa hellmanns 250'],
+      'jamón cocido x100g': ['jamon cocido 100', 'jamon cocido natural'],
+      'salame maggioni x100g': ['maggioni salame', 'salame maggioni'],
+      'queso pategrás x100g': ['pategras 100', 'queso pategras'],
+      'queso cremoso x100g': ['queso cremoso 100', 'cremoso 100g'],
     };
+
+    // Productos que NUNCA deben matchear por fuzzy (el fuzzy los confunde)
+    // Si no hay override manual, devuelve null en vez de un match incorrecto.
+    const fuzzyBlocklist = new Set([
+      'jamón cocido x100g',
+      'salame maggioni x100g',
+      'queso pategrás x100g',
+      'queso cremoso x100g',
+      'leche la serenísima 1l',
+    ]);
 
     // Función de override: busca en starposItems usando los patterns del mapeo manual
     function findManualOverride(appName: string): { price: number; spName: string } | null {
@@ -1252,8 +1275,9 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
         continue;
       }
 
-      // Primero intentar override manual, luego fuzzy
-      const match = findManualOverride(fp.name) || findBestMatch(fp.name);
+      // Primero intentar override manual, luego fuzzy (salvo blocklist)
+      const manualMatch = findManualOverride(fp.name);
+      const match = manualMatch || (fuzzyBlocklist.has(fp.name.toLowerCase()) ? null : findBestMatch(fp.name));
       if (!match) {
         noMatchCount++;
         if (noMatchNames.length < 10) noMatchNames.push(fp.name);
