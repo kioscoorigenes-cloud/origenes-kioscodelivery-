@@ -1,5 +1,5 @@
 // Extraido de server.ts: los handlers se agruparon por dominio.
-import { Router } from "express";
+import express, { Router } from "express";
 import type { Firestore } from "firebase/firestore";
 import {
   authenticateStarPOS,
@@ -655,7 +655,7 @@ export function starposRoutes({ firestoreDb }: { firestoreDb: Firestore }): Rout
 
   // Populate barcodes: one-shot para cruzar nombres Firestore↔StarPOS y grabar barcodes
   // Protegido con cron token (mismo que auto-sync)
-  router.post("/populate-barcodes", async (req, res) => {
+  router.post("/populate-barcodes", express.json({ limit: '20mb' }), async (req, res) => {
     const token = req.headers['x-cron-token'];
     if (token !== process.env.CRON_SECRET_TOKEN) {
       return res.status(401).json({ error: 'Token inválido' });
