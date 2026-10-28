@@ -79,7 +79,7 @@ async function startServer() {
     message: { error: 'Demasiadas solicitudes. Intentá de nuevo en un minuto.' },
   }));
 
-  app.use(express.json({ limit: '1mb' }));
+  app.use(express.json({ limit: '20mb' }));
 
   // ── Health check (Railway, uptime monitors, etc.) ──────────────────
   app.get('/health', (_req, res) => {
