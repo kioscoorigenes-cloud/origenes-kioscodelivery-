@@ -1501,7 +1501,7 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
   return result;
 }
 
-export async function populateBarcodes(): Promise<{ success: boolean; populated: number; alreadyHad: number; noMatch: number; logs: string[] }> {
+export async function populateBarcodes(externalProducts?: unknown[]): Promise<{ success: boolean; populated: number; alreadyHad: number; noMatch: number; logs: string[] }> {
   const logs: string[] = [];
   const adminDb = getAdminDb();
 
@@ -1510,23 +1510,29 @@ export async function populateBarcodes(): Promise<{ success: boolean; populated:
   }
 
   try {
-    logs.push('Autenticando con StarPOS...');
-    await authenticateStarPOS();
-
-    logs.push('Consultando productos StarPOS...');
-    const response = await authenticatedFetch('/v1/Products', {}, 180000);
-    if (!response.ok) throw new Error(`StarPOS Products failed: ${response.status}`);
-
-    const data = await safeJsonParse<unknown>(response, '/v1/Products');
     let starposProducts: StarPOSProduct[];
-    if (Array.isArray(data)) {
-      starposProducts = data;
-    } else if (data && typeof data === 'object') {
-      const d = data as Record<string, unknown>;
-      const candidates = d.Products || d.products || d.payload || d.data || d.items;
-      starposProducts = Array.isArray(candidates) ? candidates as StarPOSProduct[] : [];
+
+    if (externalProducts && Array.isArray(externalProducts) && externalProducts.length > 0) {
+      logs.push(`Usando ${externalProducts.length} productos StarPOS recibidos externamente.`);
+      starposProducts = externalProducts as StarPOSProduct[];
     } else {
-      starposProducts = [];
+      logs.push('Autenticando con StarPOS...');
+      await authenticateStarPOS();
+
+      logs.push('Consultando productos StarPOS...');
+      const response = await authenticatedFetch('/v1/Products', {}, 180000);
+      if (!response.ok) throw new Error(`StarPOS Products failed: ${response.status}`);
+
+      const data = await safeJsonParse<unknown>(response, '/v1/Products');
+      if (Array.isArray(data)) {
+        starposProducts = data;
+      } else if (data && typeof data === 'object') {
+        const d = data as Record<string, unknown>;
+        const candidates = d.Products || d.products || d.payload || d.data || d.items;
+        starposProducts = Array.isArray(candidates) ? candidates as StarPOSProduct[] : [];
+      } else {
+        starposProducts = [];
+      }
     }
 
     logs.push(`${starposProducts.length} productos StarPOS recibidos.`);
