@@ -6,7 +6,8 @@ import {
   syncCatalogToStarPOS,
   syncSalesAndDiscountStock,
   syncStockFromStarPOS,
-  pullPricesFromStarPOS
+  pullPricesFromStarPOS,
+  populateBarcodes
 } from "../services/starpos";
 import { requireAdmin, getAdminFirestore } from "../services/serverAuth";
 
@@ -649,6 +650,23 @@ export function starposRoutes({ firestoreDb }: { firestoreDb: Firestore }): Rout
       const msg = err instanceof Error ? err.message : String(err);
       console.warn("[StarPOS] No se pudo consultar starpos_imported_sales:", msg);
       return res.json({ success: true, sales: [], degraded: true });
+    }
+  });
+
+  // Populate barcodes: one-shot para cruzar nombres Firestore↔StarPOS y grabar barcodes
+  // Protegido con cron token (mismo que auto-sync)
+  router.post("/populate-barcodes", async (req, res) => {
+    const token = req.headers['x-cron-token'];
+    if (token !== process.env.CRON_SECRET_TOKEN) {
+      return res.status(401).json({ error: 'Token inválido' });
+    }
+
+    try {
+      const result = await populateBarcodes();
+      return res.json(result);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return res.status(500).json({ success: false, error: msg });
     }
   });
 

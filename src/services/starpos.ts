@@ -1500,3 +1500,149 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
 
   return result;
 }
+
+export async function populateBarcodes(): Promise<{ success: boolean; populated: number; alreadyHad: number; noMatch: number; logs: string[] }> {
+  const logs: string[] = [];
+  const adminDb = getAdminDb();
+
+  if (!adminDb) {
+    return { success: false, populated: 0, alreadyHad: 0, noMatch: 0, logs: ['❌ Admin SDK no disponible'] };
+  }
+
+  try {
+    logs.push('Autenticando con StarPOS...');
+    await authenticateStarPOS();
+
+    logs.push('Consultando productos StarPOS...');
+    const response = await authenticatedFetch('/v1/Products', {}, 180000);
+    if (!response.ok) throw new Error(`StarPOS Products failed: ${response.status}`);
+
+    const data = await safeJsonParse<unknown>(response, '/v1/Products');
+    let starposProducts: StarPOSProduct[];
+    if (Array.isArray(data)) {
+      starposProducts = data;
+    } else if (data && typeof data === 'object') {
+      const d = data as Record<string, unknown>;
+      const candidates = d.Products || d.products || d.payload || d.data || d.items;
+      starposProducts = Array.isArray(candidates) ? candidates as StarPOSProduct[] : [];
+    } else {
+      starposProducts = [];
+    }
+
+    logs.push(`${starposProducts.length} productos StarPOS recibidos.`);
+
+    // Construir mapa nombre normalizado → barcode (solo con precio válido)
+    const normalizeName = (n: string) => n.toLowerCase().replace(/[^a-záéíóúñü0-9\s]/g, '').replace(/\s+/g, ' ').trim();
+    const spNormToBarcode = new Map<string, string>();
+
+    for (const sp of starposProducts) {
+      if (!sp || !sp.name) continue;
+      const barcode = sp.code && /^\d{8,14}$/.test(sp.code.trim()) ? sp.code.trim() : null;
+      if (!barcode) continue;
+
+      let price: number | null = null;
+      if (Array.isArray(sp.products_prices)) {
+        for (const pp of sp.products_prices) {
+          if (typeof pp.price_sell === 'number' && pp.price_sell > 0) { price = pp.price_sell; break; }
+          if (typeof pp.price === 'number' && pp.price > 0 && price === null) price = pp.price;
+        }
+      }
+      if (price === null || price < 500) continue;
+
+      spNormToBarcode.set(normalizeName(sp.name), barcode);
+    }
+
+    logs.push(`${spNormToBarcode.size} productos StarPOS con barcode y precio válido.`);
+
+    // Leer Firestore
+    const snapshot = await adminDb.collection('products').get();
+    const firestoreProducts = snapshot.docs.map(d => {
+      const dd = d.data();
+      return {
+        id: d.id,
+        name: dd.name as string || '',
+        barcode: typeof dd.barcode === 'string' ? dd.barcode.trim() : ''
+      };
+    }).filter(p => p.name);
+
+    logs.push(`${firestoreProducts.length} productos en Firestore.`);
+
+    let populated = 0;
+    let alreadyHad = 0;
+    let noMatch = 0;
+    const updatePromises: Promise<void>[] = [];
+
+    for (const fp of firestoreProducts) {
+      if (fp.barcode) {
+        alreadyHad++;
+        continue;
+      }
+
+      // Buscar match por nombre normalizado (exact primero, fuzzy después)
+      const norm = normalizeName(fp.name);
+      let matchedBarcode: string | null = null;
+
+      if (spNormToBarcode.has(norm)) {
+        matchedBarcode = spNormToBarcode.get(norm)!;
+      } else {
+        // Fuzzy: buscar el nombre StarPOS que mejor matchee
+        let bestScore = 0;
+        let bestBarcode: string | null = null;
+        let bestCount = 0;
+        const appWords = norm.split(' ').filter(w => w.length > 2);
+
+        for (const [spNorm, bc] of spNormToBarcode) {
+          let score = 0;
+          for (const w of appWords) {
+            if (spNorm.includes(w)) score += w.length;
+          }
+          const spWords = spNorm.split(' ').filter(w => w.length > 2);
+          for (const w of spWords) {
+            if (norm.includes(w)) score += w.length;
+          }
+          if (score > bestScore) {
+            bestScore = score;
+            bestBarcode = bc;
+            bestCount = 1;
+          } else if (score === bestScore && score > 0) {
+            bestCount++;
+          }
+        }
+
+        const maxPossible = appWords.reduce((s, w) => s + w.length, 0);
+        // Solo asignar si: score es significativo Y no hay empate (evitar asignar barcode incorrecto)
+        if (bestBarcode && bestScore >= Math.max(6, maxPossible * 0.5) && bestCount === 1) {
+          matchedBarcode = bestBarcode;
+        }
+      }
+
+      if (!matchedBarcode) {
+        noMatch++;
+        if (noMatch <= 15) logs.push(`   ❌ Sin match: "${fp.name}"`);
+        continue;
+      }
+
+      updatePromises.push(
+        adminDb.collection('products').doc(fp.id).set({ barcode: matchedBarcode }, { merge: true }).then(() => {})
+      );
+      populated++;
+      if (populated <= 30) {
+        logs.push(`   ✅ "${fp.name}" → barcode ${matchedBarcode}`);
+      }
+    }
+
+    // Batch de 50
+    for (let i = 0; i < updatePromises.length; i += 50) {
+      await Promise.all(updatePromises.slice(i, i + 50));
+    }
+
+    if (populated > 30) logs.push(`   ... y ${populated - 30} más.`);
+    logs.push(`🎉 Barcode populate: ${populated} nuevos, ${alreadyHad} ya tenían, ${noMatch} sin match StarPOS.`);
+
+    return { success: true, populated, alreadyHad, noMatch, logs };
+  } catch (error: unknown) {
+    const msg = error instanceof Error ? error.message : String(error);
+    logs.push(`❌ Error: ${msg}`);
+    return { success: false, populated: 0, alreadyHad: 0, noMatch: 0, logs };
+  }
+}
