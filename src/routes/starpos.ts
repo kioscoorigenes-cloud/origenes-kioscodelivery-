@@ -655,6 +655,27 @@ export function starposRoutes({ firestoreDb }: { firestoreDb: Firestore }): Rout
 
   // Populate barcodes: one-shot para cruzar nombres Firestore↔StarPOS y grabar barcodes
   // Protegido con cron token (mismo que auto-sync)
+  // Debug: consultar productos por keyword
+  router.get("/debug-products", async (req, res) => {
+    const token = req.headers['x-cron-token'];
+    if (token !== process.env.CRON_SECRET_TOKEN) {
+      return res.status(401).json({ error: 'Token inválido' });
+    }
+    const keyword = (req.query.q as string || '').toLowerCase();
+    if (!keyword) return res.json({ error: 'Pasá ?q=keyword' });
+
+    const adminDb = getAdminFirestore();
+    if (!adminDb) return res.status(500).json({ error: 'Admin DB no disponible' });
+
+    const snap = await adminDb.collection('products').get();
+    const matches = snap.docs
+      .map(d => ({ id: d.id, ...d.data() }))
+      .filter((p: any) => p.name && p.name.toLowerCase().includes(keyword))
+      .map((p: any) => ({ id: p.id, name: p.name, barcode: p.barcode || '', price: p.price, category: p.category }));
+
+    return res.json({ total: matches.length, products: matches });
+  });
+
   router.post("/populate-barcodes", express.json({ limit: '20mb' }), async (req, res) => {
     const token = req.headers['x-cron-token'];
     if (token !== process.env.CRON_SECRET_TOKEN) {
