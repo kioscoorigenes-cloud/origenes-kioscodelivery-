@@ -676,6 +676,22 @@ export function starposRoutes({ firestoreDb }: { firestoreDb: Firestore }): Rout
     return res.json({ total: matches.length, products: matches });
   });
 
+
+  router.post("/clean-bad-barcodes", express.json({ limit: '20mb' }), async (req, res) => {
+    const token = req.headers['x-cron-token'];
+    if (token !== process.env.CRON_SECRET_TOKEN) {
+      return res.status(401).json({ error: 'Token invalido' });
+    }
+    try {
+      const products = req.body?.products;
+      const result = await cleanBadBarcodes(products);
+      return res.json(result);
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return res.status(500).json({ success: false, error: msg });
+    }
+  });
+
   router.post("/populate-barcodes", express.json({ limit: '20mb' }), async (req, res) => {
     const token = req.headers['x-cron-token'];
     if (token !== process.env.CRON_SECRET_TOKEN) {

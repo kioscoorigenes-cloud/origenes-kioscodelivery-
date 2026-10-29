@@ -1652,3 +1652,87 @@ export async function populateBarcodes(externalProducts?: unknown[]): Promise<{ 
     return { success: false, populated: 0, alreadyHad: 0, noMatch: 0, logs };
   }
 }
+
+
+/**
+ * Limpia barcodes mal asignados por fuzzy matching.
+ * Verifica que cada barcode en Firestore exista en StarPOS y que los nombres coincidan.
+ */
+export async function cleanBadBarcodes(externalProducts?: unknown[]): Promise<{ success: boolean; cleaned: number; kept: number; logs: string[] }> {
+  const logs: string[] = [];
+  const adminDb = getAdminDb();
+  if (!adminDb) return { success: false, cleaned: 0, kept: 0, logs: ['Admin SDK no disponible'] };
+
+  try {
+    let starposProducts: StarPOSProduct[];
+    if (externalProducts && Array.isArray(externalProducts) && externalProducts.length > 0) {
+      logs.push(`Usando ${externalProducts.length} productos StarPOS externos.`);
+      starposProducts = externalProducts as StarPOSProduct[];
+    } else {
+      await authenticateStarPOS();
+      const response = await authenticatedFetch('/v1/Products', {}, 180000);
+      if (!response.ok) throw new Error('StarPOS Products failed: ' + response.status);
+      const data = await safeJsonParse<unknown>(response, '/v1/Products');
+      starposProducts = Array.isArray(data) ? data : [];
+    }
+
+    const barcodeToName = new Map<string, string>();
+    for (const sp of starposProducts) {
+      if (sp?.code && sp?.name && /^\d{8,14}$/.test(sp.code.trim())) {
+        barcodeToName.set(sp.code.trim(), sp.name);
+      }
+    }
+    logs.push(`${barcodeToName.size} barcodes en StarPOS.`);
+
+    const snapshot = await adminDb.collection('products').get();
+    let cleaned = 0, kept = 0;
+    const norm = (n: string) => n.toLowerCase().replace(/[^a-z\u00e1\u00e9\u00ed\u00f3\u00fa\u00f1\u00fc0-9\s]/g, '').replace(/\s+/g, ' ').trim();
+
+    for (const doc of snapshot.docs) {
+      const d = doc.data();
+      const barcode = typeof d.barcode === 'string' ? d.barcode.trim() : '';
+      const name = (d.name as string) || '';
+      if (!barcode || !name) continue;
+
+      const spName = barcodeToName.get(barcode);
+      if (!spName) {
+        logs.push('Limpiado: "' + name + '" barcode ' + barcode + ' no existe en StarPOS');
+        await adminDb.collection('products').doc(doc.id).update({ barcode: '' });
+        cleaned++;
+        continue;
+      }
+
+      const nApp = norm(name);
+      const nSP = norm(spName);
+      const words = nApp.split(' ').filter(w => w.length > 2);
+
+      // Single-word generic names: must appear in StarPOS name
+      if (words.length <= 1) {
+        if (!nSP.includes(nApp) && !nApp.includes(nSP.split(' ')[0])) {
+          logs.push('Limpiado: "' + name + '" (' + barcode + ') -> StarPOS: "' + spName + '" no coincide');
+          await adminDb.collection('products').doc(doc.id).update({ barcode: '' });
+          cleaned++;
+          continue;
+        }
+      }
+
+      // Multi-word: at least one word must match
+      let score = 0;
+      for (const w of words) { if (nSP.includes(w)) score++; }
+      if (words.length > 0 && score === 0) {
+        logs.push('Limpiado: "' + name + '" (' + barcode + ') -> StarPOS: "' + spName + '" 0 palabras comunes');
+        await adminDb.collection('products').doc(doc.id).update({ barcode: '' });
+        cleaned++;
+        continue;
+      }
+      kept++;
+    }
+
+    logs.push('Limpieza: ' + cleaned + ' removidos, ' + kept + ' correctos.');
+    return { success: true, cleaned, kept, logs };
+  } catch (error: unknown) {
+    const msg = error instanceof Error ? error.message : String(error);
+    logs.push('Error: ' + msg);
+    return { success: false, cleaned: 0, kept: 0, logs };
+  }
+}
