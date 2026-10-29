@@ -7,7 +7,8 @@ import {
   syncSalesAndDiscountStock,
   syncStockFromStarPOS,
   pullPricesFromStarPOS,
-  populateBarcodes
+  populateBarcodes,
+  cleanBadBarcodes
 } from "../services/starpos";
 import { requireAdmin, getAdminFirestore } from "../services/serverAuth";
 
