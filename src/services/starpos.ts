@@ -103,6 +103,10 @@ export interface StarPOSProduct {
   brand_id: string;
   description: string;
   in_stock: boolean;
+  /** Código de barras EAN directo (campo "code" en la API REST) */
+  code?: string;
+  reference?: string;
+  active?: boolean;
   products_codes: StarPOSProductCode[];
   products_taxes: StarPOSProductTax[];
   products_branches: (StarPOSProductBranch | string)[];
@@ -951,10 +955,14 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
     result.totalFetched = validProducts.length;
 
     // Construir lista StarPOS con nombre y precio.
-    // La API de StarPOS no expone barcodes. Se matchea por nombre fuzzy.
+    // La API de StarPOS SÍ expone barcodes en el campo "code" de cada producto.
+    // Matching: 1° barcode (exacto), 2° override manual, 3° fuzzy name.
     const normalizeName = (n: string) => n.toLowerCase().replace(/[^a-záéíóúñü0-9\s]/g, '').replace(/\s+/g, ' ').trim();
 
-    const starposItems: { name: string; normName: string; price: number }[] = [];
+    const starposItems: { name: string; normName: string; price: number; inStock: boolean }[] = [];
+    // Mapa barcode→{precio,nombre,inStock} para matching exacto por código de barras
+    const barcodeMap = new Map<string, { price: number; name: string; inStock: boolean }>();
+
     for (const sp of validProducts) {
       if (!sp || !sp.name) continue;
 
@@ -971,14 +979,31 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
         }
       }
 
-      if (price !== null && price > 0) {
-        starposItems.push({ name: sp.name, normName: normalizeName(sp.name), price });
+      // Filtrar precios absurdamente bajos: en Argentina (2024+) nada del kiosco cuesta
+      // menos de $500. StarPOS tiene miles de productos con precios basura.
+      if (price !== null && price >= 500) {
+        const inStock = sp.in_stock !== false;
+        starposItems.push({ name: sp.name, normName: normalizeName(sp.name), price, inStock });
+
+        // Indexar por barcode: campo "code" directo en la API, o products_codes[].code
+        const barcode = sp.code && /^\d{8,14}$/.test(sp.code.trim()) ? sp.code.trim() : null;
+        if (barcode) {
+          barcodeMap.set(barcode, { price, name: sp.name, inStock });
+        }
+        // También revisar products_codes por si hay barcodes ahí
+        if (Array.isArray(sp.products_codes)) {
+          for (const pc of sp.products_codes) {
+            if (pc.code && /^\d{8,14}$/.test(pc.code.trim()) && !barcodeMap.has(pc.code.trim())) {
+              barcodeMap.set(pc.code.trim(), { price, name: sp.name, inStock });
+            }
+          }
+        }
       }
     }
 
     result.logs.push(`${starposItems.length} productos con precio válido en StarPOS.`);
+    result.logs.push(`🔢 ${barcodeMap.size} productos con barcode indexado para matching exacto.`);
     // DEBUG: mostrar primeros 10 nombres StarPOS normalizados
-    result.logs.push(`DEBUG StarPOS nombres (10): ${starposItems.slice(0, 10).map(s => `"${s.normName}"`).join(', ')}`);
 
     // Mapa de keywords de marca: app name keyword → posibles keywords en StarPOS
     const brandAliases: Record<string, string[]> = {
@@ -1039,7 +1064,7 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
     const generic = new Set(['el','la','los','las','de','del','con','sin','en','por','para','un','una','pack','x','al','natural','clasica','clasico','classic','original','ml','1l','500ml','1kg','500g','200g','100g','250g','90g','80g','60g','117g','135g','190g','400g','520g','900ml','170g']);
 
     // Pre-computar datos de StarPOS para evitar re-calcular en cada iteración
-    const exactMap = new Map<string, { price: number; name: string }>();
+    const exactMap = new Map<string, { price: number; name: string; inStock: boolean }>();
     // Índice invertido: palabra → índices de starposItems que la contienen
     const wordIndex = new Map<string, number[]>();
     // Pre-computar spWords para cada item
@@ -1047,7 +1072,7 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
 
     for (let i = 0; i < starposItems.length; i++) {
       const sp = starposItems[i];
-      exactMap.set(sp.normName, { price: sp.price, name: sp.name });
+      exactMap.set(sp.normName, { price: sp.price, name: sp.name, inStock: sp.inStock });
       const spWords = sp.normName.split(' ').filter(w => w.length > 1 && !generic.has(w));
       precomputedSpWords.push(spWords);
       // Indexar cada palabra
@@ -1060,12 +1085,12 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
     result.logs.push(`Índice construido: ${exactMap.size} nombres, ${wordIndex.size} palabras únicas.`);
 
     // Función de fuzzy match optimizada
-    function findBestMatch(appName: string): { price: number; spName: string } | null {
+    function findBestMatch(appName: string): { price: number; spName: string; inStock: boolean } | null {
       const norm = normalizeName(appName);
 
       // 1. Exact match (O(1) con Map)
       const exact = exactMap.get(norm);
-      if (exact) return { price: exact.price, spName: exact.name };
+      if (exact) return { price: exact.price, spName: exact.name, inStock: exact.inStock };
 
       const appWords = norm.split(' ').filter(w => w.length > 1 && !generic.has(w));
       if (appWords.length === 0) return null;
@@ -1093,14 +1118,14 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
         // Intentar contención solo si el nombre es corto
         if (norm.length <= 15) {
           const contained = starposItems.find(sp => sp.normName.includes(norm) || norm.includes(sp.normName));
-          if (contained) return { price: contained.price, spName: contained.name };
+          if (contained) return { price: contained.price, spName: contained.name, inStock: contained.inStock };
         }
         return null;
       }
 
       // 3. Scoring solo sobre candidatos
       let bestScore = 0;
-      let bestMatch: { price: number; spName: string } | null = null;
+      let bestMatch: { price: number; spName: string; inStock: boolean } | null = null;
       let bestCount = 0;
 
       for (const idx of candidateSet) {
@@ -1123,7 +1148,7 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
 
         if (score > bestScore) {
           bestScore = score;
-          bestMatch = { price: sp.price, spName: sp.name };
+          bestMatch = { price: sp.price, spName: sp.name, inStock: sp.inStock };
           bestCount = 1;
         } else if (score === bestScore && score > 0) {
           bestCount++;
@@ -1137,11 +1162,11 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
       // Verificar tamaño: si la app tiene un tamaño, el match debe tenerlo también
       const appSize = norm.match(/(\d+(?:[.,]\d+)?)\s*(ml|l|lts|lt|g|gr|grs|kg)/);
       if (bestMatch && bestScore >= minScore && bestCount === 1) {
-        // Verificar que no sea un match espurio: al menos 1 palabra de la app debe estar en el match
+        // Verificar que no sea un match espurio: al menos 2 palabras de la app deben estar en el match
         // (Esto evita "Leche La Serenísima" → "DULCE DE LECHE" donde solo "leche" matchea)
         const matchNormFull = normalizeName(bestMatch.spName);
         const appInMatch = appWords.filter(w => matchNormFull.includes(w)).length;
-        if (appInMatch < 1) return null;
+        if (appInMatch < 2) return null;
 
         if (appSize) {
           const appSizeNorm = appSize[1].replace(',', '.') + appSize[2].replace(/^(lts|lt)$/, 'l').replace(/^(gr|grs)$/, 'g');
@@ -1160,7 +1185,7 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
         const sizeMatch = norm.match(/(\d+)\s*(ml|l|g|kg)/);
         if (sizeMatch) {
           const sizeStr = sizeMatch[1] + sizeMatch[2];
-          let sizedBest: { price: number; spName: string } | null = null;
+          let sizedBest: { price: number; spName: string; inStock: boolean } | null = null;
           let sizedCount = 0;
           for (const idx of candidateSet) {
             const sp = starposItems[idx];
@@ -1178,7 +1203,7 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
               if (norm.includes(sw)) score += sw.length;
             }
             if (score === bestScore && sp.normName.includes(sizeStr)) {
-              sizedBest = { price: sp.price, spName: sp.name };
+              sizedBest = { price: sp.price, spName: sp.name, inStock: sp.inStock };
               sizedCount++;
             }
           }
@@ -1194,46 +1219,164 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
     const manualOverrides: Record<string, string[]> = {
       // app name (lowercase) → posibles nombres StarPOS (lowercase substrings a buscar)
       'coca-cola 500ml': ['coca cola 500', 'coca-cola 500'],
-      'monster energy 473ml': ['monster 473', 'monster energy'],
-      'gatorade naranja 500ml': ['gatorade 500', 'gatorade naranja'],
-      'leche la serenísima 1l': ['leche entera serenisima', 'leche serenisima 1', 'la serenisima leche'],
-      'palitos de la selva 60g': ['palitos selva', 'palitos de la selva'],
+      'monster energy 473ml': ['monster energy', 'monster 473'],
+      'gatorade naranja 500ml': ['gatorade naranja'],
+      'leche la serenísima 1l': ['leche entera serenisima', 'leche serenisima 1l', 'la serenisima leche 1'],
+      'palitos de la selva 60g': ['palitos de la selva'],
       'facturas surtidas x4': ['facturas surtidas', 'facturas x4', 'factura surtida'],
       'medialunas x6': ['medialunas x6', 'medialuna x6', 'medialunas x 6'],
-      'shampoo elvive 400ml': ['elvive 400', 'shampoo elvive'],
+      'shampoo elvive 400ml': ['elvive 400', 'shampoo elvive', 'loreal elvive 400'],
       'jabón dove 90g': ['jabon dove', 'dove 90'],
       'detergente magistral 750ml': ['magistral 750', 'detergente magistral'],
       'lavandina ayudín 1l': ['ayudin 1', 'lavandina ayudin'],
-      'vino trapiche malbec 750ml': ['trapiche malbec', 'trapiche 750'],
+      'vino trapiche malbec 750ml': ['trapiche malbec', 'trapiche 750', 'trapiche malbec 750', 'vino trapiche malbec'],
       'pedigree adultos 1kg': ['pedigree adulto', 'pedigree 1kg', 'pedigree 1 kg'],
-      'pizza tia maruca 350g': ['tia maruca', 'pizza tia maruca'],
+      'pizza tia maruca 350g': ['tia maruca', 'pizza tia maruca', 'tia maruca pizza', 'pizza tia maruca 350'],
       'cerveza patagonia amber 410ml': ['patagonia amber', 'patagonia 410'],
-      'cerveza corona porrón 330ml': ['corona 330', 'corona porron'],
+      'cerveza corona porrón 330ml': ['corona 330', 'corona porron', 'corona 330ml', 'corona porron 330'],
       'pote helado frigor ddl 1l': ['frigor ddl', 'helado frigor', 'frigor dulce'],
       'campari 750ml': ['campari 750', 'campari'],
       'vodka smirnoff 700ml': ['smirnoff 700', 'vodka smirnoff'],
+      // Fixes para matches incorrectos:
+      'lays classic 90g': ['lays clasicas 90', 'lays original 90', 'lays 90'],
+      'cheetos flamin hot 80g': ['cheetos flamin', 'cheetos picant'],
+      'oreo original 117g': ['oreo 117g', 'oreo original 117', 'galletitas oreo 117'],
+      'criollitas 200g': ['criollitas 200', 'criollitas clasica 200'],
+      'fideos matarazzo 500g': ['matarazzo 500', 'fideos matarazzo 500'],
+      'mayonesa hellmanns 250g': ['hellmanns clasica 250', 'hellmanns mayonesa 250g'],
+      'jamón cocido x100g': ['jamon cocido 100', 'jamon cocido natural'],
+      'salame maggioni x100g': ['maggioni', 'salame maggioni'],
+      'queso pategrás x100g': ['pategras 100', 'pategras x 100', 'queso pategras x100'],
+      'queso cremoso x100g': ['queso cremoso 100', 'cremoso 100'],
+      'puré de tomates arcor 520g': ['pure tomate arcor 520', 'tomates arcor 520'],
+      'atún al natural gomes da costa 170g': ['gomes da costa 170', 'atun gomes 170'],
+      'yogur ser frutilla 190g': ['yogur ser frutilla', 'ser frutilla 190'],
+      'yerba mate taragüi 500g': ['taragui 500', 'yerba taragui 500'],
+      'toblerone 100g': ['toblerone'],
+      'mentitas peppermint': ['mentitas felfort', 'drf mentitas menta'],
+      'harina de trigo blancaflor 1kg': ['harina blancaflor'],
+      'paleta ahumada x100g': ['paleta ahumada'],
+      'aceite de girasol natura 900ml': ['aceite natura 900', 'natura 900'],
+      'azúcar ledesma clásica 1kg': ['azucar ledesma', 'ledesma 1kg'],
+      // Variantes con nombres largos en Firestore
+      'bebida energizante monster energy 473ml': ['monster energy', 'monster 473'],
+      'bebida gatorade naranja 500ml': ['gatorade naranja', 'gatorade 500'],
+      'vodka smirnoff triple destilado red 700ml': ['smirnoff 700', 'vodka smirnoff'],
+      'papas fritas lays clásicas 90g': ['lays clasicas 90', 'lays original 90', 'lays 90'],
+      'cheetos horneados queso 80g': ['cheetos horneados', 'cheetos queso 80'],
+      'coca-cola original sabor único 2.25l': ['coca cola 2.25', 'coca cola 2 25', 'coca-cola 2.25', 'coca cola 225'],
+      'cerveza quilmes clásica 1l': ['quilmes clasica 1', 'quilmes 1 litro', 'quilmes 1l', 'quilmes clasica 1000'],
+      'cerveza corona extra 710ml': ['corona extra 710', 'corona 710'],
+      'cerveza imperial golden 1l': ['imperial golden 1', 'imperial 1l', 'imperial golden 1000', 'imperial 1 litro'],
+      'cerveza stella artois 975ml': ['stella artois 975', 'stella 975'],
+      'aperitivo campari milano bitter 750ml': ['campari 750', 'campari milano', 'campari bitter'],
+      'aperitivo gancia americano 950ml': ['gancia americano', 'gancia 950'],
+      'gaseosa fanta naranja 1.5l': ['fanta naranja 1.5', 'fanta 1.5', 'fanta naranja 1500'],
+      'alfajor guaymallén negro ddl': ['guaymalien', 'guaymallen negro', 'guaymallen ddl'],
+      'alfajor milka oreo triple 135g': ['milka oreo triple', 'milka oreo 135'],
+      'doritos mega queso nacho 150g': ['doritos mega queso', 'doritos nacho 150', 'doritos mega 150'],
+      'cubanito mantecol': ['cubanito mantecol', 'mantecol cubanito'],
+      'arcor cracker 112g': ['arcor cracker 112', 'cracker arcor 112'],
+      'bastoncitos krachitos 60g': ['bastoncitos krachitos 60'],
+      'lenguetazo manzana acida': ['lenguetazo manzana'],
+      'lenguetazo tutti-frutti': ['lenguetazo tutti', 'lenguetazo tutti frutti'],
+      // 'noquis la salteña' — bloqueado: StarPOS tiene precio $1600 (sospechoso, bajó de $4200)
+      'plin x 2 cremoso': ['plin cremoso', 'plin x 2'],
+      // 'shampoo sedal sachet' — bloqueado: StarPOS matcheó SEDAL X340ML (producto incorrecto, sachet ≠ botella)
+      'bananita mogul': ['bananita mogul', 'mogul bananita'],
+      // 'bubbaloo rosa' — bloqueado: StarPOS matcheó BUBBALOO HUELLITAS FRUTILLA (producto incorrecto)
     };
 
+    // Productos que NUNCA deben matchear por fuzzy (el fuzzy los confunde con otro producto).
+    // Si no hay override manual que matchee, devuelve null → sin match (mejor que un match malo).
+    const fuzzyBlocklist = new Set([
+      'jamón cocido x100g',
+      'salame maggioni x100g',
+      'queso pategrás x100g',
+      'queso cremoso x100g',
+      'leche la serenísima 1l',
+      'cheetos flamin hot 80g',
+      'mayonesa hellmanns 250g',
+      'puré de tomates arcor 520g',
+      'atún al natural gomes da costa 170g',
+      'vino trapiche malbec 750ml',
+      'shampoo elvive 400ml',
+      'detergente magistral 750ml',
+      'oreo original 117g',
+      'yogur ser frutilla 190g',
+      'yerba mate taragüi 500g',
+      'lays classic 90g',
+      'pizza tia maruca 350g',
+      'cerveza corona porrón 330ml',
+      'cerveza quilmes clásica 1l',
+      'cerveza corona extra 710ml',
+      'cerveza imperial golden 1l',
+      'cerveza stella artois 975ml',
+      'coca-cola original sabor único 2.25l',
+      'gaseosa fanta naranja 1.5l',
+      'bebida energizante monster energy 473ml',
+      'bebida gatorade naranja 500ml',
+      'vodka smirnoff triple destilado red 700ml',
+      'papas fritas lays clásicas 90g',
+      'cheetos horneados queso 80g',
+      'aperitivo campari milano bitter 750ml',
+      'aperitivo gancia americano 950ml',
+      'shampoo sedal sachet',
+      'bubbaloo rosa',
+      'noquis la salteña',
+    ]);
+
     // Función de override: busca en starposItems usando los patterns del mapeo manual
-    function findManualOverride(appName: string): { price: number; spName: string } | null {
+    function findManualOverride(appName: string): { price: number; spName: string; inStock: boolean } | null {
       const key = appName.toLowerCase();
       const patterns = manualOverrides[key];
       if (!patterns) return null;
       for (const pattern of patterns) {
         const found = starposItems.find(sp => sp.normName.includes(pattern));
-        if (found) return { price: found.price, spName: found.name };
+        if (found) return { price: found.price, spName: found.name, inStock: found.inStock };
       }
       return null;
     }
 
-    // Usar DEFAULT_PRODUCTS como referencia en vez de leer toda la colección Firestore
-    // (leer 2000+ docs agota la cuota gratuita de Firestore)
-    const { DEFAULT_PRODUCTS } = await import('../data');
-    const firestoreProducts = DEFAULT_PRODUCTS.map(p => ({
-      id: String(p.id),
-      name: p.name,
-      price: p.price
-    }));
+    // Leer productos de Firestore con admin SDK (no consume cuota del cliente).
+    // Fallback a DEFAULT_PRODUCTS si admin no está disponible.
+    let firestoreProducts: { id: string; name: string; price: number; inStock?: boolean; barcode?: string }[] = [];
+
+    if (adminDb) {
+      try {
+        const snapshot = await adminDb.collection('products').get();
+        firestoreProducts = snapshot.docs
+          .map(d => {
+            const data = d.data();
+            return {
+              id: d.id,
+              name: data.name as string || '',
+              price: typeof data.price === 'number' ? data.price : 0,
+              inStock: data.inStock !== false,
+              barcode: typeof data.barcode === 'string' ? data.barcode.trim() : undefined
+            };
+          })
+          .filter(p => p.name); // solo los que tienen nombre
+        const withBarcode = firestoreProducts.filter(p => p.barcode).length;
+        result.logs.push(`📂 Leídos ${firestoreProducts.length} productos de Firestore (admin SDK). ${withBarcode} con barcode.`);
+      } catch (e: any) {
+        result.logs.push(`⚠️ Error leyendo Firestore: ${e.message}. Usando DEFAULT_PRODUCTS.`);
+        const { DEFAULT_PRODUCTS } = await import('../data');
+        firestoreProducts = DEFAULT_PRODUCTS.map(p => ({
+          id: String(p.id),
+          name: p.name,
+          price: p.price
+        }));
+      }
+    } else {
+      result.logs.push(`⚠️ Admin SDK no disponible. Usando DEFAULT_PRODUCTS (${53} productos).`);
+      const { DEFAULT_PRODUCTS } = await import('../data');
+      firestoreProducts = DEFAULT_PRODUCTS.map(p => ({
+        id: String(p.id),
+        name: p.name,
+        price: p.price
+      }));
+    }
 
     result.logs.push(`${firestoreProducts.length} productos de la app para sincronizar.`);
     result.logs.push(`Nombres (5): ${firestoreProducts.slice(0, 5).map(f => `"${normalizeName(f.name)}"`).join(', ')}`);
@@ -1243,7 +1386,11 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
     let skippedCount = 0;
     let noMatchCount = 0;
     let samePrice = 0;
+    let priceDropCount = 0;
+    let stockChangedCount = 0;
+    let barcodeMatchCount = 0;
     const noMatchNames: string[] = [];
+    const priceDropNames: string[] = [];
     const updatePromises: Promise<void>[] = [];
 
     for (const fp of firestoreProducts) {
@@ -1252,27 +1399,65 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
         continue;
       }
 
-      // Primero intentar override manual, luego fuzzy
-      const match = findManualOverride(fp.name) || findBestMatch(fp.name);
+      // Orden de matching: 1° barcode exacto, 2° override manual, 3° fuzzy name
+      let match: { price: number; spName: string; inStock: boolean } | null = null;
+
+      // 1. Barcode match (100% confiable, sin ambigüedad)
+      if (fp.barcode && barcodeMap.has(fp.barcode)) {
+        const bm = barcodeMap.get(fp.barcode)!;
+        match = { price: bm.price, spName: bm.name, inStock: bm.inStock };
+        barcodeMatchCount++;
+      }
+
+      // 2. Si no hay barcode match, intentar override manual, luego fuzzy
+      if (!match) {
+        const manualMatch = findManualOverride(fp.name);
+        match = manualMatch || (fuzzyBlocklist.has(fp.name.toLowerCase()) ? null : findBestMatch(fp.name));
+      }
       if (!match) {
         noMatchCount++;
-        if (noMatchNames.length < 10) noMatchNames.push(fp.name);
+        if (noMatchNames.length < 25) noMatchNames.push(fp.name);
         continue;
       }
       const starposPrice = match.price;
 
-      // Solo actualizar si el precio cambió
+      // Si el precio no cambió, verificar si cambió el stock
       if (Math.abs(starposPrice - fp.price) < 0.01) {
         samePrice++;
+        // Aunque el precio sea igual, si el stock cambió hay que actualizar
+        const currentInStock = fp.inStock !== false; // default true si no existe
+        if (match.inStock !== currentInStock) {
+          const stockUpdateFn = adminDb
+            ? adminDb.collection('products').doc(fp.id).set({ inStock: match.inStock }, { merge: true })
+            : setDoc(doc(db, 'products', fp.id), { inStock: match.inStock }, { merge: true });
+          updatePromises.push(stockUpdateFn.then(() => {}));
+          stockChangedCount++;
+          if (stockChangedCount <= 10) {
+            result.logs.push(`   📦 "${fp.name}": stock ${currentInStock ? '✅→❌' : '❌→✅'}`);
+          }
+        }
         skippedCount++;
         continue;
       }
 
-      // Actualizar SOLO el precio — no tocar nada más (fotos, nombre, categoría, stock)
+      // PROTECCIÓN: En Argentina los precios solo suben. Si StarPOS tiene un precio
+      // menor al actual, probablemente el match es incorrecto (otro producto).
+      // Skipear y loggear para revisión manual.
+      if (starposPrice < fp.price && fp.price > 0) {
+        skippedCount++;
+        if (priceDropNames.length < 15) {
+          priceDropNames.push(`${fp.name}: $${fp.price} → $${starposPrice} (SP: ${match.spName})`);
+        }
+        priceDropCount++;
+        continue;
+      }
+
+      // Actualizar precio y stock desde StarPOS — no tocar nada más (fotos, nombre, categoría)
       // Usar set+merge en vez de update para no fallar si el doc no existe aún
+      const updateData: { price: number; inStock: boolean } = { price: starposPrice, inStock: match.inStock };
       const updateFn = adminDb
-        ? adminDb.collection('products').doc(fp.id).set({ price: starposPrice }, { merge: true })
-        : setDoc(doc(db, 'products', fp.id), { price: starposPrice }, { merge: true });
+        ? adminDb.collection('products').doc(fp.id).set(updateData, { merge: true })
+        : setDoc(doc(db, 'products', fp.id), updateData, { merge: true });
       updatePromises.push(updateFn.then(() => {}));
 
       updatedCount++;
@@ -1293,11 +1478,19 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
     result.updatedCount = updatedCount;
     result.skippedCount = skippedCount;
     result.success = true;
-    result.logs.push(`📊 Match por nombre: ${samePrice + updatedCount} coincidieron, ${noMatchCount} sin match.`);
+    result.logs.push(`📊 Matching: ${barcodeMatchCount} por barcode, ${samePrice + updatedCount - barcodeMatchCount} por nombre fuzzy, ${noMatchCount} sin match.`);
     if (noMatchNames.length > 0) {
       result.logs.push(`   Sin match (primeros ${noMatchNames.length}): ${noMatchNames.join(', ')}`);
     }
-    result.logs.push(`🎉 Sincronización de precios finalizada. Actualizados: ${updatedCount}, precio igual: ${samePrice}, sin match: ${noMatchCount}.`);
+    if (priceDropCount > 0) {
+      result.logs.push(`⚠️ ${priceDropCount} productos con precio StarPOS MENOR al actual (posible match incorrecto, no actualizados):`);
+      priceDropNames.forEach(n => result.logs.push(`   ⛔ ${n}`));
+    }
+
+    if (stockChangedCount > 0) {
+      result.logs.push(`📦 Stock actualizado en ${stockChangedCount} productos (precio igual pero stock cambió).`);
+    }
+    result.logs.push(`🎉 Sincronización finalizada. Precios actualizados: ${updatedCount}, precio igual: ${samePrice}, stock cambió: ${stockChangedCount}, sin match: ${noMatchCount}, precio bajó (bloqueados): ${priceDropCount}, match por barcode: ${barcodeMatchCount}.`);
   } catch (error: unknown) {
     result.success = false;
     const msg = error instanceof Error ? error.message : String(error);
@@ -1306,4 +1499,162 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
   }
 
   return result;
+}
+
+/**
+ * Popula el campo "barcode" en productos Firestore cruzando con StarPOS.
+ * Para cada producto Firestore que NO tiene barcode, busca match en StarPOS
+ * por nombre y si el producto StarPOS tiene EAN en "code", lo escribe.
+ * One-shot para bootstrappear barcodes; después los syncs matchean por barcode.
+ */
+export async function populateBarcodes(externalProducts?: StarPOSProduct[]): Promise<{ success: boolean; populated: number; alreadyHad: number; noMatch: number; logs: string[] }> {
+  const logs: string[] = [];
+  const adminDb = getAdminDb();
+
+  if (!adminDb) {
+    return { success: false, populated: 0, alreadyHad: 0, noMatch: 0, logs: ['❌ Admin SDK no disponible'] };
+  }
+
+  try {
+    let starposProducts: StarPOSProduct[];
+
+    if (externalProducts && externalProducts.length > 0) {
+      starposProducts = externalProducts;
+      logs.push(`Usando ${starposProducts.length} productos recibidos externamente.`);
+    } else {
+      logs.push('Autenticando con StarPOS...');
+      await authenticateStarPOS();
+
+      logs.push('Consultando productos StarPOS...');
+      const response = await authenticatedFetch('/v1/Products', {}, 180000);
+      if (!response.ok) throw new Error(`StarPOS Products failed: ${response.status}`);
+
+      const data = await safeJsonParse<unknown>(response, '/v1/Products');
+      if (Array.isArray(data)) {
+        starposProducts = data;
+      } else if (data && typeof data === 'object') {
+        const d = data as Record<string, unknown>;
+        const candidates = d.Products || d.products || d.payload || d.data || d.items;
+        starposProducts = Array.isArray(candidates) ? candidates as StarPOSProduct[] : [];
+      } else {
+        starposProducts = [];
+      }
+    }
+
+    logs.push(`${starposProducts.length} productos StarPOS recibidos.`);
+
+    // Construir mapa nombre normalizado → barcode (solo con precio válido)
+    const normalizeName = (n: string) => n.toLowerCase().replace(/[^a-záéíóúñü0-9\s]/g, '').replace(/\s+/g, ' ').trim();
+    const spNormToBarcode = new Map<string, string>();
+
+    for (const sp of starposProducts) {
+      if (!sp || !sp.name) continue;
+      const barcode = sp.code && /^\d{8,14}$/.test(sp.code.trim()) ? sp.code.trim() : null;
+      if (!barcode) continue;
+
+      let price: number | null = null;
+      if (Array.isArray(sp.products_prices)) {
+        for (const pp of sp.products_prices) {
+          if (typeof pp.price_sell === 'number' && pp.price_sell > 0) { price = pp.price_sell; break; }
+          if (typeof pp.price === 'number' && pp.price > 0 && price === null) price = pp.price;
+        }
+      }
+      if (price === null || price < 500) continue;
+
+      spNormToBarcode.set(normalizeName(sp.name), barcode);
+    }
+
+    logs.push(`${spNormToBarcode.size} productos StarPOS con barcode y precio válido.`);
+
+    // Leer Firestore
+    const snapshot = await adminDb.collection('products').get();
+    const firestoreProducts = snapshot.docs.map(d => {
+      const dd = d.data();
+      return {
+        id: d.id,
+        name: dd.name as string || '',
+        barcode: typeof dd.barcode === 'string' ? dd.barcode.trim() : ''
+      };
+    }).filter(p => p.name);
+
+    logs.push(`${firestoreProducts.length} productos en Firestore.`);
+
+    let populated = 0;
+    let alreadyHad = 0;
+    let noMatch = 0;
+    const updatePromises: Promise<void>[] = [];
+
+    for (const fp of firestoreProducts) {
+      if (fp.barcode) {
+        alreadyHad++;
+        continue;
+      }
+
+      // Buscar match por nombre normalizado (exact primero, fuzzy después)
+      const norm = normalizeName(fp.name);
+      let matchedBarcode: string | null = null;
+
+      if (spNormToBarcode.has(norm)) {
+        matchedBarcode = spNormToBarcode.get(norm)!;
+      } else {
+        // Fuzzy: buscar el nombre StarPOS que mejor matchee
+        let bestScore = 0;
+        let bestBarcode: string | null = null;
+        let bestCount = 0;
+        const appWords = norm.split(' ').filter(w => w.length > 2);
+
+        for (const [spNorm, bc] of spNormToBarcode) {
+          let score = 0;
+          for (const w of appWords) {
+            if (spNorm.includes(w)) score += w.length;
+          }
+          const spWords = spNorm.split(' ').filter(w => w.length > 2);
+          for (const w of spWords) {
+            if (norm.includes(w)) score += w.length;
+          }
+          if (score > bestScore) {
+            bestScore = score;
+            bestBarcode = bc;
+            bestCount = 1;
+          } else if (score === bestScore && score > 0) {
+            bestCount++;
+          }
+        }
+
+        const maxPossible = appWords.reduce((s, w) => s + w.length, 0);
+        // Solo asignar si: score es significativo Y no hay empate (evitar asignar barcode incorrecto)
+        if (bestBarcode && bestScore >= Math.max(6, maxPossible * 0.5) && bestCount === 1) {
+          matchedBarcode = bestBarcode;
+        }
+      }
+
+      if (!matchedBarcode) {
+        noMatch++;
+        if (noMatch <= 15) logs.push(`   ❌ Sin match: "${fp.name}"`);
+        continue;
+      }
+
+      updatePromises.push(
+        adminDb.collection('products').doc(fp.id).set({ barcode: matchedBarcode }, { merge: true }).then(() => {})
+      );
+      populated++;
+      if (populated <= 30) {
+        logs.push(`   ✅ "${fp.name}" → barcode ${matchedBarcode}`);
+      }
+    }
+
+    // Batch de 50
+    for (let i = 0; i < updatePromises.length; i += 50) {
+      await Promise.all(updatePromises.slice(i, i + 50));
+    }
+
+    if (populated > 30) logs.push(`   ... y ${populated - 30} más.`);
+    logs.push(`🎉 Barcode populate: ${populated} nuevos, ${alreadyHad} ya tenían, ${noMatch} sin match StarPOS.`);
+
+    return { success: true, populated, alreadyHad, noMatch, logs };
+  } catch (error: unknown) {
+    const msg = error instanceof Error ? error.message : String(error);
+    logs.push(`❌ Error: ${msg}`);
+    return { success: false, populated: 0, alreadyHad: 0, noMatch: 0, logs };
+  }
 }
