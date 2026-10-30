@@ -1,5 +1,5 @@
 // Extraido de server.ts: los handlers se agruparon por dominio.
-import express, { Router } from "express";
+import { Router } from "express";
 import type { Firestore } from "firebase/firestore";
 import {
   authenticateStarPOS,
@@ -7,8 +7,7 @@ import {
   syncSalesAndDiscountStock,
   syncStockFromStarPOS,
   pullPricesFromStarPOS,
-  populateBarcodes,
-  cleanBadBarcodes
+  populateBarcodes
 } from "../services/starpos";
 import { requireAdmin, getAdminFirestore } from "../services/serverAuth";
 
@@ -465,6 +464,53 @@ export function starposRoutes({ firestoreDb }: { firestoreDb: Firestore }): Rout
   });
 
   // ==========================================
+  // FIX-PRICES: Corregir precios específicos manualmente
+  // Protegido por token secreto. Body: { fixes: [{name: "...", price: 1234}] }
+  // ==========================================
+  router.post("/fix-prices", async (req, res) => {
+    const token = req.headers["x-cron-token"] || req.query.token;
+    const expected = process.env.CRON_SECRET_TOKEN;
+    if (!expected || token !== expected) {
+      return res.status(401).json({ success: false, error: "Token inválido" });
+    }
+    try {
+      const { fixes } = req.body as { fixes: { name: string; price: number }[] };
+      if (!fixes || !Array.isArray(fixes) || fixes.length === 0) {
+        return res.status(400).json({ success: false, error: "Body debe ser { fixes: [{name, price}] }" });
+      }
+
+      // Leer todos los productos de Firestore
+      const adminDb = getAdminFirestore();
+      if (!adminDb) {
+        return res.status(500).json({ success: false, error: "No se pudo inicializar firebase-admin" });
+      }
+      const snapshot = await adminDb.collection('products').get();
+      const products = snapshot.docs.map(d => ({ ...(d.data() as { name?: string; price?: number }), docId: d.id }));
+
+      const results: string[] = [];
+      for (const fix of fixes) {
+        const match = products.find(p => p.name?.toLowerCase() === fix.name.toLowerCase());
+        if (!match) {
+          results.push(`❌ "${fix.name}" no encontrado en Firestore`);
+          continue;
+        }
+        if (!match.docId) {
+          results.push(`❌ "${fix.name}" encontrado pero sin ID de documento`);
+          continue;
+        }
+        const oldPrice = match.price || 0;
+        await adminDb.collection('products').doc(match.docId).set({ price: fix.price }, { merge: true });
+        results.push(`✅ "${match.name}": $${oldPrice} → $${fix.price}`);
+      }
+
+      return res.json({ success: true, results });
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : String(err);
+      return res.status(500).json({ success: false, error: msg });
+    }
+  });
+
+  // ==========================================
   // AUTO-SYNC DIARIO (llamado por cron/scheduled task)
   // Protegido por token secreto en lugar de auth de admin
   // ==========================================
@@ -656,50 +702,26 @@ export function starposRoutes({ firestoreDb }: { firestoreDb: Firestore }): Rout
 
   // Populate barcodes: one-shot para cruzar nombres Firestore↔StarPOS y grabar barcodes
   // Protegido con cron token (mismo que auto-sync)
-  // Debug: consultar productos por keyword
-  router.get("/debug-products", async (req, res) => {
-    const token = req.headers['x-cron-token'];
-    if (token !== process.env.CRON_SECRET_TOKEN) {
-      return res.status(401).json({ error: 'Token inválido' });
-    }
-    const keyword = (req.query.q as string || '').toLowerCase();
-    if (!keyword) return res.json({ error: 'Pasá ?q=keyword' });
-
-    const adminDb = getAdminFirestore();
-    if (!adminDb) return res.status(500).json({ error: 'Admin DB no disponible' });
-
-    const snap = await adminDb.collection('products').get();
-    const matches = snap.docs
-      .map(d => ({ id: d.id, ...d.data() }))
-      .filter((p: any) => p.name && p.name.toLowerCase().includes(keyword))
-      .map((p: any) => ({ id: p.id, name: p.name, barcode: p.barcode || '', price: p.price, category: p.category }));
-
-    return res.json({ total: matches.length, products: matches });
-  });
-
-
-  router.post("/clean-bad-barcodes", async (req, res) => {
-    const token = req.headers['x-cron-token'];
-    if (token !== process.env.CRON_SECRET_TOKEN) {
-      return res.status(401).json({ error: 'Token invalido' });
-    }
-    try {
-      const result = await cleanBadBarcodes();
-      return res.json(result);
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      return res.status(500).json({ success: false, error: msg });
-    }
-  });
-
-  router.post("/populate-barcodes", express.json({ limit: '20mb' }), async (req, res) => {
+  router.post("/populate-barcodes", async (req, res) => {
     const token = req.headers['x-cron-token'];
     if (token !== process.env.CRON_SECRET_TOKEN) {
       return res.status(401).json({ error: 'Token inválido' });
     }
 
     try {
-      const result = await populateBarcodes();
+      // Aceptar productos StarPOS en el body (para cuando Railway no puede conectar a StarPOS)
+      let externalProducts = undefined;
+      const body = req.body;
+      if (body) {
+        if (Array.isArray(body)) {
+          externalProducts = body;
+        } else if (body.payload && Array.isArray(body.payload)) {
+          externalProducts = body.payload;
+        } else if (body.products && Array.isArray(body.products)) {
+          externalProducts = body.products;
+        }
+      }
+      const result = await populateBarcodes(externalProducts);
       return res.json(result);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
