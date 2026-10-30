@@ -678,7 +678,7 @@ export function starposRoutes({ firestoreDb }: { firestoreDb: Firestore }): Rout
   });
 
 
-  router.post("/clean-bad-barcodes", express.json({ limit: '20mb' }), async (req, res) => {
+  router.post("/clean-bad-barcodes", async (req, res) => {
     const token = req.headers['x-cron-token'];
     if (token !== process.env.CRON_SECRET_TOKEN) {
       return res.status(401).json({ error: 'Token invalido' });
