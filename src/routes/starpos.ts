@@ -684,15 +684,7 @@ export function starposRoutes({ firestoreDb }: { firestoreDb: Firestore }): Rout
       return res.status(401).json({ error: 'Token invalido' });
     }
     try {
-      const bodyKeys = req.body ? Object.keys(req.body) : [];
-      const products = req.body?.products;
-      const isArr = Array.isArray(products);
-      const len = isArr ? products.length : (products ? 'not-array' : 'undefined');
-      console.log('clean-bad-barcodes body keys:', bodyKeys, 'products type:', typeof products, 'len:', len);
-      if (!products || (Array.isArray(products) && products.length === 0)) {
-        return res.json({ success: false, cleaned: 0, kept: 0, logs: ['No products in body. Keys: ' + bodyKeys.join(',') + ' type: ' + typeof products] });
-      }
-      const result = await cleanBadBarcodes(products);
+      const result = await cleanBadBarcodes();
       return res.json(result);
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
