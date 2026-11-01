@@ -10,6 +10,7 @@ import rateLimit from "express-rate-limit";
 import helmet from "helmet";
 import cors from "cors";
 import compression from "compression";
+import { getAdminFirestore } from "./src/services/serverAuth";
 
 import { aiRoutes } from "./src/routes/ai";
 import { facturadorRoutes } from "./src/routes/facturador";
@@ -94,8 +95,22 @@ async function startServer() {
   app.use(express.json({ limit: '1mb' }));
 
   // ── Health check (Railway, uptime monitors, etc.) ──────────────────
-  app.get('/health', (_req, res) => {
-    res.json({ status: 'ok', timestamp: new Date().toISOString() });
+  // CQ-05: verifica dependencias críticas
+  app.get('/health', async (_req, res) => {
+    const checks: Record<string, string> = {};
+    try {
+      const adminDb = getAdminFirestore();
+      if (adminDb) {
+        await adminDb.collection('products').limit(1).get();
+        checks.firestore = 'ok';
+      } else {
+        checks.firestore = 'not_configured';
+      }
+    } catch {
+      checks.firestore = 'error';
+    }
+    const allOk = Object.values(checks).every(v => v === 'ok' || v === 'not_configured');
+    res.status(allOk ? 200 : 503).json({ status: allOk ? 'ok' : 'degraded', timestamp: new Date().toISOString(), checks });
   });
 
   // ── Rutas por dominio ───────────────────────────────────────────────
@@ -137,9 +152,21 @@ async function startServer() {
     });
   }
 
-  app.listen(PORT, "0.0.0.0", () => {
+  const server = app.listen(PORT, "0.0.0.0", () => {
     console.log(`Server running on http://localhost:${PORT}`);
   });
+
+  // ERR-04: graceful shutdown
+  const shutdown = (signal: string) => {
+    console.log(`[${signal}] Cerrando servidor...`);
+    server.close(() => {
+      console.log('Servidor cerrado.');
+      process.exit(0);
+    });
+    setTimeout(() => { console.error('Forzando cierre tras 10s'); process.exit(1); }, 10000);
+  };
+  process.on('SIGTERM', () => shutdown('SIGTERM'));
+  process.on('SIGINT', () => shutdown('SIGINT'));
 }
 
 startServer().catch((err) => {

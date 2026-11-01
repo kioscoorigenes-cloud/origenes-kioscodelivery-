@@ -152,6 +152,7 @@ export interface StarPOSClosedCash {
 
 // Singleton state to store the access token in memory
 let cachedToken: string | null = null;
+let authInFlight: Promise<string> | null = null;
 let tokenExpiry: number = 0; // Epoch timestamp in ms
 
 /**
@@ -230,6 +231,10 @@ export async function authenticateStarPOS(forceRefresh = false): Promise<string>
     return cachedToken;
   }
 
+  // STAR-01: mutex — reutilizar autenticación en vuelo
+  if (!forceRefresh && authInFlight) return authInFlight;
+
+  authInFlight = (async () => {
   const authUrl = `${config.serviceUrl.replace(/\/$/, '')}/v1/Authenticate`;
 
   const controller = new AbortController();
@@ -267,6 +272,9 @@ export async function authenticateStarPOS(forceRefresh = false): Promise<string>
     console.error(`StarPOS Auth Error at ${authUrl}:`, msg);
     throw new Error(`Error de autenticación StarPOS: ${msg}`);
   }
+  })().finally(() => { authInFlight = null; });
+
+  return authInFlight;
 }
 
 /**
@@ -469,7 +477,8 @@ export async function syncCatalogToStarPOS(products: Product[]): Promise<SyncRep
           { code: codeValue, quantity: 1 }
         ],
         products_taxes: [
-          { tax_id: 'tax_iva_21', value: 21 }
+          // STAR-03: IVA configurable por producto (default 21%)
+          { tax_id: p.taxId || 'tax_iva_21', value: p.taxPct ?? 21 }
         ],
         products_branches: [
           'branch_principal'

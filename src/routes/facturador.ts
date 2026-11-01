@@ -48,7 +48,7 @@ const reportSaleLimiter = rateLimit({
 
 const MAX_ORDER_ITEMS = 100;
 // Solo se acepta informar un pedido reciente: evita reprocesar pedidos viejos.
-const REPORT_SALE_MAX_AGE_MS = 60 * 60 * 1000;
+const REPORT_SALE_MAX_AGE_MS = 10 * 60 * 1000; // DATA-02: ventana reducida a 10 min
 
 export function facturadorRoutes(): Router {
   const router = Router();

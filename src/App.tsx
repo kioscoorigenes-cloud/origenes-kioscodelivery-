@@ -244,7 +244,7 @@ export default function App() {
           }
 
           if (count > 0) {
-            console.log(`[Backfill] ¡Actualizados ${count} productos con name_lower!`);
+            console.info(`[Backfill] ¡Actualizados ${count} productos con name_lower!`);
           }
         } catch (err) {
           console.error('[Backfill Error]', err);
@@ -518,7 +518,7 @@ export default function App() {
         await setDoc(doc(db, 'products', p.id.toString()), productWithLower);
       }
     } catch (err) {
-      console.log("Pre-seeding default items requires login as administrator.");
+      console.info("Pre-seeding default items requires login as administrator.");
     }
   };
 
@@ -801,7 +801,7 @@ export default function App() {
       })
         .then(res => res.json())
         .then(resJson => {
-          console.log('[Billing API Info] Venta informada exitosamente:', resJson);
+          console.info('[Billing API Info] Venta informada exitosamente:', resJson);
         })
         .catch(e => {
           console.warn('[Billing API Warning] Venta guardada localmente, sincronización externa diferida:', e.message);

@@ -59,7 +59,7 @@ export function useAdmin(currentUser: User | null | undefined): UseAdminResult {
 
           // Delete consumed invite
           await deleteDoc(inviteRef);
-          console.log(`User ${email} promoted to admin/super role.`);
+          console.info(`User ${email} promoted to admin/super role.`);
         }
       } catch (err) {
         console.warn("Error running promotion flow in hook:", err);

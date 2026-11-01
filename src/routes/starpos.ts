@@ -29,10 +29,14 @@ export function starposRoutes({ firestoreDb }: { firestoreDb: Firestore }): Rout
     const isConfigured = !!config.userId && !!config.secret && !!config.serviceUrl;
 
     if (!isConfigured) {
-      return res.json({
+      // STAR-04: en producción sin STARPOS_DEMO_MODE explícito, advertir
+      const demoAllowed = process.env.NODE_ENV !== 'production' || process.env.STARPOS_DEMO_MODE === 'true';
+      return res.status(demoAllowed ? 200 : 503).json({
         configured: false,
-        status: "SIN_CONFIGURAR",
-        message: "No se detectaron las variables de entorno para StarPOS. La sincronización se ejecutará en MODO DEMO SIMULADO.",
+        status: demoAllowed ? "SIN_CONFIGURAR" : "NO_DISPONIBLE",
+        message: demoAllowed
+          ? "No se detectaron las variables de entorno para StarPOS. La sincronización se ejecutará en MODO DEMO SIMULADO."
+          : "StarPOS no está configurado y el modo demo no está habilitado en producción.",
         config: {
           userId: "",
           serviceUrl: "Demo Local",
@@ -264,7 +268,7 @@ export function starposRoutes({ firestoreDb }: { firestoreDb: Firestore }): Rout
       ];
 
       // NOTA: modo demo NO escribe en Firestore para evitar corromper datos reales.
-      console.log("[Demo Sync] Modo simulado — sin escrituras en Firestore.");
+      console.info("[Demo Sync] Modo simulado — sin escrituras en Firestore.");
 
       return res.json({
         success: true,
