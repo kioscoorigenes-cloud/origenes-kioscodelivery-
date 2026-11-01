@@ -532,7 +532,8 @@ export function starposRoutes({ firestoreDb }: { firestoreDb: Firestore }): Rout
         pricesUpdated: pricesResult.updatedCount,
         salesSuccess: salesResult.success,
         pricesSuccess: pricesResult.success,
-        logs: [...salesResult.logs, "---", ...pricesResult.logs]
+        logs: [...salesResult.logs, "---", ...pricesResult.logs],
+        noMatch: pricesResult.noMatchNames || []
       });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);

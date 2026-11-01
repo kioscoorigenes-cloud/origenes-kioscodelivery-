@@ -901,6 +901,7 @@ export interface SyncPricesResult {
   updatedCount: number;
   skippedCount: number;
   logs: string[];
+  noMatchNames?: string[];
 }
 
 export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
@@ -1453,7 +1454,7 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
       }
       if (!match) {
         noMatchCount++;
-        if (noMatchNames.length < 25) noMatchNames.push(fp.name);
+        noMatchNames.push(fp.name);
         continue;
       }
       const starposPrice = match.price;
@@ -1528,6 +1529,7 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
       result.logs.push(`📦 Stock actualizado en ${stockChangedCount} productos (precio igual pero stock cambió).`);
     }
     result.logs.push(`🎉 Sincronización finalizada. Precios actualizados: ${updatedCount}, precio igual: ${samePrice}, stock cambió: ${stockChangedCount}, sin match: ${noMatchCount}, precio bajó (bloqueados): ${priceDropCount}, match por barcode: ${barcodeMatchCount}.`);
+    result.noMatchNames = noMatchNames;
   } catch (error: unknown) {
     result.success = false;
     const msg = error instanceof Error ? error.message : String(error);
