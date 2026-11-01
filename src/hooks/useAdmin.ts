@@ -2,13 +2,10 @@ import { useState, useEffect } from 'react';
 import { User } from 'firebase/auth';
 import { doc, onSnapshot, getDoc, setDoc, deleteDoc } from 'firebase/firestore';
 import { db } from '../firebase';
+import { BOOTSTRAP_ADMIN_EMAILS } from '../config/adminEmails';
 
-export const BOOTSTRAP_ADMIN_EMAILS = [
-  'cam01back@gmail.com',
-  'juanpcolinagonzalez@gmail.com',
-  'kiosco.origenes@gmail.com',
-  'olimpopiquet2019@gmail.com'
-];
+// Re-export for backward compatibility
+export { BOOTSTRAP_ADMIN_EMAILS };
 
 export interface AdminRole {
   role: 'super' | 'admin';

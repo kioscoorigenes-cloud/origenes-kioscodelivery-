@@ -3,15 +3,7 @@ import { initializeApp as initAdminApp, getApps as getAdminApps, cert } from 'fi
 import { getAuth as getAdminAuth } from 'firebase-admin/auth';
 import { getFirestore as getAdminFirestoreInstance } from 'firebase-admin/firestore';
 import firebaseConfig from '../../firebase-applet-config.json';
-
-// Mirrors BOOTSTRAP_ADMIN_EMAILS in src/hooks/useAdmin.ts and the isAdmin()
-// helper in firestore.rules. Kept local so the server never imports the client SDK.
-const BOOTSTRAP_ADMIN_EMAILS = [
-  'cam01back@gmail.com',
-  'juanpcolinagonzalez@gmail.com',
-  'kiosco.origenes@gmail.com',
-  'olimpopiquet2019@gmail.com'
-];
+import { BOOTSTRAP_ADMIN_EMAILS } from '../config/adminEmails';
 
 function getAdminApp() {
   const raw = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;

@@ -404,7 +404,7 @@ export function starposRoutes({ firestoreDb }: { firestoreDb: Firestore }): Rout
 
   // Pull prices con cron-token (para testing sin auth Firebase)
   router.post("/pull-prices-cron", async (req, res) => {
-    const token = req.headers["x-cron-token"] || req.query.token;
+    const token = req.headers["x-cron-token"];
     const expected = process.env.CRON_SECRET_TOKEN;
     if (!expected || token !== expected) {
       return res.status(401).json({ success: false, error: "Token inválido" });
@@ -423,7 +423,7 @@ export function starposRoutes({ firestoreDb }: { firestoreDb: Firestore }): Rout
   // Protegido por token secreto. Body: { fixes: [{name: "...", price: 1234}] }
   // ==========================================
   router.post("/fix-prices", async (req, res) => {
-    const token = req.headers["x-cron-token"] || req.query.token;
+    const token = req.headers["x-cron-token"];
     const expected = process.env.CRON_SECRET_TOKEN;
     if (!expected || token !== expected) {
       return res.status(401).json({ success: false, error: "Token inválido" });
@@ -470,7 +470,7 @@ export function starposRoutes({ firestoreDb }: { firestoreDb: Firestore }): Rout
   // Protegido por token secreto en lugar de auth de admin
   // ==========================================
   router.post("/auto-sync", async (req, res) => {
-    const token = req.headers["x-cron-token"] || req.query.token;
+    const token = req.headers["x-cron-token"];
     const expected = process.env.CRON_SECRET_TOKEN;
 
     if (!expected || token !== expected) {
@@ -510,7 +510,7 @@ export function starposRoutes({ firestoreDb }: { firestoreDb: Firestore }): Rout
       }
 
       // 2. Sync precios desde StarPOS (independiente de ventas)
-      let pricesResult: { success: boolean; updatedCount: number; logs: string[] } = {
+      let pricesResult: { success: boolean; updatedCount: number; logs: string[]; noMatchNames?: string[] } = {
         success: false, updatedCount: 0, logs: []
       };
       try {
@@ -548,7 +548,7 @@ export function starposRoutes({ firestoreDb }: { firestoreDb: Firestore }): Rout
 
   // Diagnóstico rápido de conexión StarPOS (protegido por cron token, no requiere Firebase auth)
   router.get("/diagnose-quick", async (req, res) => {
-    const token = req.headers["x-cron-token"] || req.query.token;
+    const token = req.headers["x-cron-token"];
     const expected = process.env.CRON_SECRET_TOKEN;
     if (!expected || token !== expected) {
       return res.status(401).json({ success: false, error: "Token inválido" });

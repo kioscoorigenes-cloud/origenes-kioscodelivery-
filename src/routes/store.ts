@@ -39,7 +39,7 @@ export function storeRoutes(): Router {
   });
 
   router.get("/export-products", async (req, res) => {
-    const token = req.query.token;
+    const token = req.headers["x-cron-token"];
     const expected = process.env.CRON_SECRET_TOKEN;
     if (!expected || token !== expected) {
       return res.status(401).json({ error: "Token inválido" });

@@ -654,7 +654,14 @@ export async function syncSalesAndDiscountStock(firestoreProducts: Product[]): P
       currentProducts.push({ ...(docSnap.data() as Product) });
     });
 
-    const newProcessedTicketIds: string[] = Array.from(processedTicketIds);
+    // Cap processedTicketIds to avoid unbounded growth (memory leak PERF-02).
+    // Keep only the last 5000 entries — more than enough for a kiosco.
+    const MAX_PROCESSED_IDS = 5000;
+    let existingIds = Array.from(processedTicketIds);
+    if (existingIds.length > MAX_PROCESSED_IDS) {
+      existingIds = existingIds.slice(-MAX_PROCESSED_IDS);
+    }
+    const newProcessedTicketIds: string[] = existingIds;
     let stockUpdatedCount = 0;
 
     for (const ticket of tickets) {
@@ -669,70 +676,101 @@ export async function syncSalesAndDiscountStock(firestoreProducts: Product[]): P
 
       result.logs.push(`Procesando ticket nro: ${ticket.ticket_number} (ID: ${ticket.id}). Total: $${ticket.total}`);
 
-      // Loop over ticket lines
-      for (const line of ticket.ticket_lines) {
-        if (!line || typeof line.units !== 'number') { continue; }
-        // Find product with matching code or ID
-        const matchedProduct = currentProducts.find(p =>
-          p.id.toString() === line.product_id ||
-          p.codigoFacturador === line.product_id ||
-          (!!line.product_name && p.name.toLowerCase() === String(line.product_name).toLowerCase())
-        );
-
-        if (matchedProduct) {
-          const knownStock = (matchedProduct as unknown as Record<string, unknown>).stockQty;
-          if (typeof knownStock !== 'number') {
-            result.logs.push(`   ⚠️ "${matchedProduct.name}": stock desconocido, no se descuenta (cargá el stock real primero).`);
-            continue;
-          }
-
-          const nextStock = Math.max(0, knownStock - line.units);
-          const nextInStock = nextStock > 0;
-
-          // Update Firestore
-          if (adminDb) {
-            await adminDb.collection('products').doc(matchedProduct.id.toString()).update({
-              stockQty: nextStock,
-              inStock: nextInStock,
-            });
-          } else {
-            const productRef = doc(db, 'products', matchedProduct.id.toString());
-            await updateDoc(productRef, {
-              stockQty: nextStock,
-              inStock: nextInStock,
-            });
-          }
-          result.stockReductions.push({
-            productName: matchedProduct.name,
-            sku: matchedProduct.codigoFacturador || matchedProduct.id.toString(),
-            qty: line.units
-          });
-
-          stockUpdatedCount++;
-          result.logs.push(`   -> Descontado "${matchedProduct.name}" x${line.units}. Nuevo stock: ${nextStock}`);
-        } else {
-          result.logs.push(`   ⚠️ No se encontró producto en tienda para ID/Nombre: "${line.product_name}" (Línea omitida).`);
-        }
-      }
-
-      // Add to processed list
-      newProcessedTicketIds.push(ticket.id);
-
-      // Save ticket inside a subcollection for audit visibility
+      // Collect all writes for this ticket into a single batch (PERF-01)
       if (adminDb) {
-        await adminDb.collection('starpos_imported_sales').doc(ticket.id).set({ ...ticket, importedAt: new Date().toISOString() });
-      } else {
-        await setDoc(doc(db, 'starpos_imported_sales', ticket.id), { ...ticket, importedAt: new Date().toISOString() });
-      }
+        const batch = adminDb.batch();
+        let batchOps = 0;
 
-      // Persistir el estado tras CADA ticket procesado para evitar doble descuento
-      try {
-        if (adminDb) {
-          await adminDb.collection('settings').doc('starpos_sync_state').set({ processedTicketIds: newProcessedTicketIds, lastSyncTime: new Date().toISOString() });
-        } else {
-          await setDoc(stateRef, { processedTicketIds: newProcessedTicketIds, lastSyncTime: new Date().toISOString() });
+        for (const line of ticket.ticket_lines) {
+          if (!line || typeof line.units !== 'number') { continue; }
+          const matchedProduct = currentProducts.find(p =>
+            p.id.toString() === line.product_id ||
+            p.codigoFacturador === line.product_id ||
+            (!!line.product_name && p.name.toLowerCase() === String(line.product_name).toLowerCase())
+          );
+
+          if (matchedProduct) {
+            const knownStock = (matchedProduct as unknown as Record<string, unknown>).stockQty;
+            if (typeof knownStock !== 'number') {
+              result.logs.push(`   ⚠️ "${matchedProduct.name}": stock desconocido, no se descuenta (cargá el stock real primero).`);
+              continue;
+            }
+            const nextStock = Math.max(0, knownStock - line.units);
+            const nextInStock = nextStock > 0;
+
+            batch.update(adminDb.collection('products').doc(matchedProduct.id.toString()), {
+              stockQty: nextStock,
+              inStock: nextInStock,
+            });
+            // Update local copy so subsequent tickets see the reduced stock
+            (matchedProduct as unknown as Record<string, unknown>).stockQty = nextStock;
+            (matchedProduct as unknown as Record<string, unknown>).inStock = nextInStock;
+            batchOps++;
+
+            result.stockReductions.push({
+              productName: matchedProduct.name,
+              sku: matchedProduct.codigoFacturador || matchedProduct.id.toString(),
+              qty: line.units
+            });
+            stockUpdatedCount++;
+            result.logs.push(`   -> Descontado "${matchedProduct.name}" x${line.units}. Nuevo stock: ${nextStock}`);
+          } else {
+            result.logs.push(`   ⚠️ No se encontró producto en tienda para ID/Nombre: "${line.product_name}" (Línea omitida).`);
+          }
         }
-      } catch { /* se reintenta en la próxima corrida */ }
+
+        // Add ticket audit record + state update to the same batch
+        newProcessedTicketIds.push(ticket.id);
+        batch.set(adminDb.collection('starpos_imported_sales').doc(ticket.id), { ...ticket, importedAt: new Date().toISOString() });
+        batch.set(adminDb.collection('settings').doc('starpos_sync_state'), { processedTicketIds: newProcessedTicketIds, lastSyncTime: new Date().toISOString() });
+        batchOps += 2;
+
+        // Firestore batches max 500 ops — a single ticket should never hit this
+        if (batchOps > 0) {
+          await batch.commit();
+        }
+      } else {
+        // Client SDK fallback (no batch support in client SDK used here)
+        for (const line of ticket.ticket_lines) {
+          if (!line || typeof line.units !== 'number') { continue; }
+          const matchedProduct = currentProducts.find(p =>
+            p.id.toString() === line.product_id ||
+            p.codigoFacturador === line.product_id ||
+            (!!line.product_name && p.name.toLowerCase() === String(line.product_name).toLowerCase())
+          );
+
+          if (matchedProduct) {
+            const knownStock = (matchedProduct as unknown as Record<string, unknown>).stockQty;
+            if (typeof knownStock !== 'number') {
+              result.logs.push(`   ⚠️ "${matchedProduct.name}": stock desconocido, no se descuenta (cargá el stock real primero).`);
+              continue;
+            }
+            const nextStock = Math.max(0, knownStock - line.units);
+            const nextInStock = nextStock > 0;
+
+            const productRef = doc(db, 'products', matchedProduct.id.toString());
+            await updateDoc(productRef, { stockQty: nextStock, inStock: nextInStock });
+            (matchedProduct as unknown as Record<string, unknown>).stockQty = nextStock;
+            (matchedProduct as unknown as Record<string, unknown>).inStock = nextInStock;
+
+            result.stockReductions.push({
+              productName: matchedProduct.name,
+              sku: matchedProduct.codigoFacturador || matchedProduct.id.toString(),
+              qty: line.units
+            });
+            stockUpdatedCount++;
+            result.logs.push(`   -> Descontado "${matchedProduct.name}" x${line.units}. Nuevo stock: ${nextStock}`);
+          } else {
+            result.logs.push(`   ⚠️ No se encontró producto en tienda para ID/Nombre: "${line.product_name}" (Línea omitida).`);
+          }
+        }
+
+        newProcessedTicketIds.push(ticket.id);
+        await setDoc(doc(db, 'starpos_imported_sales', ticket.id), { ...ticket, importedAt: new Date().toISOString() });
+        try {
+          await setDoc(stateRef, { processedTicketIds: newProcessedTicketIds, lastSyncTime: new Date().toISOString() });
+        } catch { /* se reintenta en la próxima corrida */ }
+      }
 
       // Mark as transmitted in StarPOS API
       try {

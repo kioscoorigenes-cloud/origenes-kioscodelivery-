@@ -103,7 +103,23 @@ async function startServer() {
     const distPath = path.join(process.cwd(), 'dist');
     // dotfiles 'allow': sin esto /.well-known/assetlinks.json da 404 y falla
     // la verificacion del TWA en Google Play.
-    app.use(express.static(distPath, { dotfiles: 'allow' }));
+    app.use(express.static(distPath, {
+      dotfiles: 'allow',
+      // Assets con hash en el nombre se cachean 1 año (PERF-07)
+      setHeaders(res, filePath) {
+        if (/\.[a-f0-9]{8,}\.(js|css|woff2?|png|jpg|svg)$/i.test(filePath)) {
+          res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
+        }
+      }
+    }));
+
+    // API 404: cualquier ruta /api/* que no matcheó arriba devuelve 404 JSON,
+    // en vez de caer al catch-all del SPA que devuelve index.html (FE-02).
+    app.all('/api/*', (_req, res) => {
+      res.status(404).json({ error: 'Endpoint no encontrado' });
+    });
+
+    // SPA catch-all: solo rutas que NO son /api/*
     app.get('*', (req, res) => {
       res.sendFile(path.join(distPath, 'index.html'));
     });
