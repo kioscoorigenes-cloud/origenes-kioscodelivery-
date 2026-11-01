@@ -958,7 +958,7 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
     // Construir lista StarPOS con nombre y precio.
     // La API de StarPOS SÍ expone barcodes en el campo "code" de cada producto.
     // Matching: 1° barcode (exacto), 2° override manual, 3° fuzzy name.
-    const normalizeName = (n: string) => n.toLowerCase().replace(/[^a-záéíóúñü0-9\s]/g, '').replace(/\s+/g, ' ').trim();
+    const normalizeName = (n: string) => n.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim();
 
     const starposItems: { name: string; normName: string; price: number; inStock: boolean }[] = [];
     // Mapa barcode→{precio,nombre,inStock} para matching exacto por código de barras
@@ -1321,7 +1321,22 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
       // 'noquis la salteña' — bloqueado: StarPOS tiene precio $1600 (sospechoso, bajó de $4200)
       'plin x 2 cremoso': ['plin cremoso', 'plin x 2'],
       // 'shampoo sedal sachet' — bloqueado: StarPOS matcheó SEDAL X340ML (producto incorrecto, sachet ≠ botella)
-      'bananita mogul': ['bananita mogul', 'mogul bananita'],
+      'bananita mogul': ['bananita mogul', 'mogul bananita', 'mogul bananita x'],
+      'chocolate cofler block maní 110g': ['cofler block mani', 'cofler block 110', 'cofler mani'],
+      'queso cremoso tremblay x 500g': ['tremblay 500', 'tremblay cremoso', 'queso tremblay'],
+      'carbon x 5kg': ['carbon 5', 'carbon x 5', 'carbon vegetal 5'],
+      'hielo x 1kg': ['hielo 1', 'hielo x 1', 'bolsa hielo'],
+      'tic tac': ['tic tac'],
+      'pan comun primavera': ['pan primavera', 'primavera comun'],
+      'pan especial artesano': ['pan artesano', 'artesano especial'],
+      'arcor naranja durazno': ['arcor naranja durazno', 'jugo arcor naranja'],
+      'la saltena': ['la saltena', 'saltena'],
+      'esp. prepizza': ['prepizza', 'pre pizza'],
+      // Marcas de una sola palabra — específicas si StarPOS tiene solo un producto con ese nombre
+      'maizena': ['maizena'],
+      'speed': ['speed'],
+      'poett': ['poett'],
+      'tulipan': ['tulipan'],
       // 'bubbaloo rosa' — bloqueado: StarPOS matcheó BUBBALOO HUELLITAS FRUTILLA (producto incorrecto)
     };
 
@@ -1478,10 +1493,11 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
         continue;
       }
 
-      // PROTECCIÓN: En Argentina los precios solo suben. Si StarPOS tiene un precio
-      // menor al actual, probablemente el match es incorrecto (otro producto).
-      // Skipear y loggear para revisión manual.
-      if (starposPrice < fp.price && fp.price > 0) {
+      // PROTECCIÓN: En Argentina los precios generalmente suben. Si StarPOS tiene un precio
+      // MUCHO menor al actual (>10%), probablemente el match es incorrecto.
+      // Pequeñas bajas (≤10%) se permiten (pueden ser promociones o correcciones).
+      const dropPercent = fp.price > 0 ? ((fp.price - starposPrice) / fp.price) * 100 : 0;
+      if (starposPrice < fp.price && fp.price > 0 && dropPercent > 10) {
         skippedCount++;
         if (priceDropNames.length < 15) {
           priceDropNames.push(`${fp.name}: $${fp.price} → $${starposPrice} (SP: ${match.spName})`);
@@ -1583,7 +1599,7 @@ export async function populateBarcodes(externalProducts?: StarPOSProduct[]): Pro
     logs.push(`${starposProducts.length} productos StarPOS recibidos.`);
 
     // Construir mapa nombre normalizado → barcode (solo con precio válido)
-    const normalizeName = (n: string) => n.toLowerCase().replace(/[^a-záéíóúñü0-9\s]/g, '').replace(/\s+/g, ' ').trim();
+    const normalizeName = (n: string) => n.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim();
     const spNormToBarcode = new Map<string, string>();
 
     for (const sp of starposProducts) {
