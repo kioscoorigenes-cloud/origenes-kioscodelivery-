@@ -18,9 +18,9 @@ export interface Product {
   sku?: string;
   /** Cantidad en stock (unidades disponibles) */
   stockQty?: number;
-  /** ID del impuesto en StarPOS (default: tax_iva_21) */
-  taxId?: string;
-  /** Porcentaje de IVA (default: 21) */
+  /** ID del impuesto asignado en StarPOS */
+  taxId?: number;
+  /** Porcentaje de impuesto (ej. 21 para IVA 21%) */
   taxPct?: number;
 }
 
@@ -107,5 +107,50 @@ export interface DeliveryZone {
 export interface BillingConfig {
   apiUrl: string;
   apiKey: string;
+}
+
+// CQ-02: Tipos para reducir uso de `any`
+
+/** Registro de administrador leído de Firestore (collection 'admins') */
+export interface AdminRecord {
+  id: string;
+  email?: string;
+  role: 'super' | 'admin';
+  addedBy?: string;
+  addedAt?: string;
+}
+
+/** Invitación de admin leída de Firestore (collection 'admin_invites') */
+export interface AdminInvite {
+  id: string;
+  email?: string;
+  role: 'super' | 'admin';
+  addedBy?: string;
+  addedAt?: string;
+}
+
+/** Línea de ticket de venta StarPOS importada */
+export interface ImportedTicketLine {
+  product_name: string;
+  qty: number;
+  price: number;
+}
+
+/** Venta StarPOS importada (collection 'starpos_imported_sales') */
+export interface ImportedSale {
+  id: string;
+  ticket_number: string;
+  timestamp: string;
+  importedAt: string;
+  total: number;
+  ticket_lines?: ImportedTicketLine[];
+}
+
+/** Tipo mínimo del usuario Firebase usado en props de componentes */
+export interface AppUser {
+  uid: string;
+  email: string | null;
+  displayName?: string | null;
+  photoURL?: string | null;
 }
 

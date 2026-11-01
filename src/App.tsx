@@ -48,10 +48,11 @@ const readLocalProducts = (): Product[] | null => {
  * opcionales vacios. Sin esto, un campo mal tipado hace que la regla rechace la
  * escritura entera con permission-denied.
  */
-function sanitizeProductForWrite(p: any) {
-  const str = (v: any, max: number) => (typeof v === 'string' ? v : (v == null ? '' : String(v))).slice(0, max);
+// eslint-disable-next-line @typescript-eslint/no-explicit-any -- accepts Product or raw object from import
+function sanitizeProductForWrite(p: Product | Record<string, any>) {  // CQ-02: narrowed from bare `any`
+  const str = (v: unknown, max: number) => (typeof v === 'string' ? v : (v == null ? '' : String(v))).slice(0, max);
   const nameClean = str(p.name, 200);
-  const clean: Record<string, any> = {
+  const clean: Record<string, string | number | boolean | null> = {
     id: Number(p.id),
     name: nameClean,
     name_lower: nameClean.trim().toLowerCase(),
@@ -541,7 +542,7 @@ export default function App() {
       }
     } catch (err) {
       setProducts(previousProductsList);
-      const e2 = err as any;
+      const e2 = err as { code?: string; message?: string };
       const motivo = e2?.code || e2?.message || String(err);
       window.alert(
         'No se pudo guardar el producto.\n\n' +
@@ -588,7 +589,7 @@ export default function App() {
       }
     } catch (err) {
       setProducts(previousProductsListForAdd);
-      const e2 = err as any;
+      const e2 = err as { code?: string; message?: string };
       const motivo = e2?.code || e2?.message || String(err);
       window.alert(
         'No se pudo guardar el producto.\n\n' +

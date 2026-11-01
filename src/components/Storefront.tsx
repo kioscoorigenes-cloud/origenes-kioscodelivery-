@@ -1,3 +1,4 @@
+import type { AppUser } from '../types';
 import React, { Component, useState, useMemo, useRef, useEffect } from 'react';
 import { AnimatePresence, m } from 'motion/react';
 import { 
@@ -34,7 +35,7 @@ interface StorefrontProps {
   onUpdateProduct?: (product: Product) => void;
   onAddProduct?: (product: Product) => void;
   onDeleteProduct?: (productId: number) => void;
-  currentUser?: any;
+  currentUser?: AppUser | null;
   banners?: PromoBanner[];
   onSignInGoogle?: () => void;
   signInState?: 'idle' | 'pending' | 'redirecting' | 'error';
@@ -88,7 +89,7 @@ class MapsErrorBoundary extends Component<MapsErrorBoundaryProps, MapsErrorBound
     return { hasError: true };
   }
 
-  componentDidCatch(error: any, errorInfo: any) {
+  componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
     console.error("MapsErrorBoundary caught an error:", error, errorInfo);
   }
 
@@ -422,7 +423,7 @@ export const Storefront: React.FC<StorefrontProps> = ({
       entregado: '\ud83c\udf89 \u00a1Pedido ENTREGADO! Gracias por tu compra.',
       cancelado: '\u274c Tu pedido fue cancelado. Consultanos por WhatsApp si tenes dudas.',
     };
-    const msg = NOTIFY_MSGS[status] || `Tu pedido cambio de estado: ${orderStatusLabel(status as any, delivery as any)}`;
+    const msg = NOTIFY_MSGS[status] || `Tu pedido cambio de estado: ${orderStatusLabel(status as Order['status'], delivery as 'envio' | 'retiro')}`;
 
     showToast(msg);
     try { playChime(); } catch (e) { /* sin audio */ }

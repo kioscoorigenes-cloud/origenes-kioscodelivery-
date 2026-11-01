@@ -8,7 +8,7 @@ import {
   Filter, Play, Sparkles, HelpCircle,
     Mail, Eye, EyeOff, ShieldCheck
 } from 'lucide-react';
-import { Product, Order, Category, PromoBanner, BillingConfig, DeliveryZone, Combo } from '../types';
+import { Product, Order, Category, PromoBanner, BillingConfig, DeliveryZone, Combo, AdminRecord, AdminInvite, ImportedSale, ImportedTicketLine, AppUser } from '../types';
 import { db } from '../firebase';
 import { compressImageForUpload, uploadToSupabase, withTimeout } from '../utils/imageUpload';
 import { doc, getDoc, setDoc, collection, onSnapshot, deleteDoc, query, where, orderBy, limit, getDocs } from 'firebase/firestore';
@@ -98,7 +98,7 @@ interface AdminPanelProps {
   goBackToStore: () => void;
   newOrderToast: Order | null;
   onDismissNewOrderToast: () => void;
-  currentUser: any;
+  currentUser: AppUser | null;
   onSignInGoogle: () => void;
   signInState?: 'idle' | 'pending' | 'redirecting' | 'error';
   signInError?: string | null;
@@ -271,14 +271,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [syncingStockDirect, setSyncingStockDirect] = useState<boolean>(false);
   const [syncingPrices, setSyncingPrices] = useState<boolean>(false);
   const [syncingNow, setSyncingNow] = useState<boolean>(false);
-  const [starposSales, setStarposSales] = useState<any[]>([]);
+  const [starposSales, setStarposSales] = useState<ImportedSale[]>([]);
   const [loadingSales, setLoadingSales] = useState<boolean>(false);
   const [runningDiagnostic, setRunningDiagnostic] = useState<boolean>(false);
   const [diagnosticResult, setDiagnosticResult] = useState<any>(null);
 
   // Administradores management states
-  const [adminsList, setAdminsList] = useState<any[]>([]);
-  const [invitesList, setInvitesList] = useState<any[]>([]);
+  const [adminsList, setAdminsList] = useState<AdminRecord[]>([]);
+  const [invitesList, setInvitesList] = useState<AdminInvite[]>([]);
   const [inviteEmail, setInviteEmail] = useState<string>('');
   const [inviteRole, setInviteRole] = useState<'admin' | 'super'>('admin');
   const [adminsActionMessage, setAdminsActionMessage] = useState<string>('');
@@ -290,9 +290,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
     // Subscribe to 'admins'
     const unsubscribeAdmins = onSnapshot(collection(db, 'admins'), (snapshot) => {
-      const list: any[] = [];
+      const list: AdminRecord[] = [];
       snapshot.forEach((doc) => {
-        list.push({ id: doc.id, ...doc.data() });
+        list.push({ id: doc.id, ...doc.data() } as AdminRecord);
       });
       setAdminsList(list);
     }, (error) => {
@@ -301,9 +301,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
     // Subscribe to 'admin_invites'
     const unsubscribeInvites = onSnapshot(collection(db, 'admin_invites'), (snapshot) => {
-      const list: any[] = [];
+      const list: AdminInvite[] = [];
       snapshot.forEach((doc) => {
-        list.push({ id: doc.id, ...doc.data() });
+        list.push({ id: doc.id, ...doc.data() } as AdminInvite);
       });
       setInvitesList(list);
     }, (error) => {
@@ -348,7 +348,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     }
   };
 
-  const handleRemoveAdmin = async (admin: any) => {
+  const handleRemoveAdmin = async (admin: AdminRecord) => {
     setAdminsActionMessage('');
     setAdminsActionError(false);
 
@@ -513,7 +513,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         
         let reductionMsg = "";
         if (data.stockReductions && data.stockReductions.length > 0) {
-          reductionMsg = "\n\nSe ajustó el stock de:\n" + data.stockReductions.map((r: any) => `• ${r.productName} (Cant: -${r.qty})`).join('\n');
+          reductionMsg = "\n\nSe ajustó el stock de:\n" + data.stockReductions.map((r: { productName: string; qty: number }) => `• ${r.productName} (Cant: -${r.qty})`).join('\n');
         } else {
           reductionMsg = "\n\nNo se detectaron nuevas ventas para procesar en esta sesión.";
         }
@@ -1525,7 +1525,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     };
 
     // Helper to parse price intelligently supporting multiple formats (7.800,00 vs 7,800.00 vs 7800)
-    const parsePriceValue = (val: any): { price: number; error: boolean } => {
+    const parsePriceValue = (val: string | number | null | undefined): { price: number; error: boolean } => {
       if (typeof val === 'number') {
         return { price: val, error: isNaN(val) || val <= 0 };
       }
@@ -1601,7 +1601,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
       try {
         const uint8 = new Uint8Array(data);
-        let rawRows: any[][] = [];
+        let rawRows: (string | number | null | undefined)[][] = [];
 
         // Check ZIP signature for XLSX (PK.. 80, 75)
         const isXlsx = uint8.length > 4 && uint8[0] === 80 && uint8[1] === 75;
@@ -3916,7 +3916,7 @@ className="bg-slate-800 hover:bg-slate-700 text-sky-400 border border-slate-700/
                 </div>
               ) : starposSales.length > 0 ? (
                 <div className="space-y-3 max-h-[350px] overflow-y-auto pr-1">
-                  {starposSales.map((sale: any) => (
+                  {starposSales.map((sale: ImportedSale) => (
                     <div 
                       key={sale.id}
                       className="border border-slate-100 rounded-xl bg-slate-50/50 p-4 flex flex-col sm:flex-row sm:items-center justify-between gap-3 text-xs"
@@ -3934,7 +3934,7 @@ className="bg-slate-800 hover:bg-slate-700 text-sky-400 border border-slate-700/
                           Fecha: {new Date(sale.timestamp).toLocaleString('es-AR')} | Importado el: {new Date(sale.importedAt).toLocaleString('es-AR')}
                         </div>
                         <div className="pt-2 flex flex-col gap-1">
-                          {sale.ticket_lines?.map((line: any, idx: number) => (
+                          {sale.ticket_lines?.map((line: ImportedTicketLine, idx: number) => (
                             <div key={idx} className="font-mono text-[10.5px] text-slate-600 bg-white px-2 py-1 border border-slate-100 rounded-md inline-flex items-center gap-1.5 w-fit">
                               📦 <span className="font-extrabold">{line.product_name}</span> x{line.qty} | ${line.price?.toLocaleString('es-AR')}
                             </div>

@@ -210,8 +210,21 @@ service cloud.firestore {
 
     // DATA-03: precios flaggeados para revisión admin
     match /priceFlagged/{productId} {
+
+    // PERF-05: overrides y blocklist para matching de precios
+    match /priceOverrides/{overrideId} {
+      allow read: if isAdmin();
+      allow write: if isSuperAdmin();
+    }
+
+    match /priceConfig/{configId} {
+      allow read: if isAdmin();
+      allow write: if isSuperAdmin();
+    }
       allow read, write: if isAdmin();
     }
+
+    // PERF-05: overrides y blocklist para matching de precios
 
   }
 }
