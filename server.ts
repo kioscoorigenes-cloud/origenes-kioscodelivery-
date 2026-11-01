@@ -114,4 +114,7 @@ async function startServer() {
   });
 }
 
-startServer();
+startServer().catch((err) => {
+  console.error('❌ Error fatal al iniciar el servidor:', err);
+  process.exit(1);
+});

@@ -7,8 +7,7 @@ import {
   syncSalesAndDiscountStock,
   syncStockFromStarPOS,
   pullPricesFromStarPOS,
-  populateBarcodes,
-  cleanBadBarcodes
+  populateBarcodes
 } from "../services/starpos";
 import { requireAdmin, getAdminFirestore } from "../services/serverAuth";
 
@@ -264,53 +263,8 @@ export function starposRoutes({ firestoreDb }: { firestoreDb: Firestore }): Rout
         { productName: "Alfajor Triple Milka", sku: "SKU-ALFAJOR-TRIPLE", qty: 3 }
       ];
 
-      try {
-        const { getDocs, collection, doc, updateDoc } = await import("firebase/firestore");
-        const snap = await getDocs(collection(firestoreDb, 'products'));
-        let count = 0;
-        for (const docObj of snap.docs) {
-          const p = docObj.data();
-          if (p.name.toLowerCase().includes("queso") || p.name.toLowerCase().includes("coca") || p.name.toLowerCase().includes("alfajor")) {
-            const currentStock = p.stockQty !== undefined ? p.stockQty : 15;
-            const nextStock = Math.max(0, currentStock - 2);
-            await updateDoc(doc(firestoreDb, 'products', docObj.id), {
-              stockQty: nextStock,
-              inStock: nextStock > 0
-            });
-            count++;
-          }
-        }
-        console.log(`[Demo Sync] Decremented stock of ${count} matching demo products in Firestore.`);
-      } catch (e: unknown) {
-        const msg = e instanceof Error ? e.message : String(e);
-        console.warn("Could not decrement demo stock in firestore:", msg);
-      }
-
-      try {
-        const { doc, setDoc } = await import("firebase/firestore");
-        const demoTicketId = `DEMO-TX-${Date.now()}`;
-        await setDoc(doc(firestoreDb, 'starpos_imported_sales', demoTicketId), {
-          id: demoTicketId,
-          ticket_number: `T001-${Math.floor(1000 + Math.random() * 9000)}`,
-          timestamp: new Date().toISOString(),
-          ticket_lines: [
-            { id: "line_1", product_id: "SKU-QUESO-CREMOSO", product_name: "Queso Cremoso x100g", qty: 2, price: 500, subtotal: 1000 },
-            { id: "line_2", product_id: "SKU-COCA-500", product_name: "Coca-Cola 500ml", qty: 5, price: 1500, subtotal: 7500 }
-          ],
-          tax_lines: [
-            { tax_id: "tax_iva_21", amount: 1785 }
-          ],
-          payments: [
-            { payment_method_id: "pay_cash", amount: 8500 }
-          ],
-          subtotal: 8500,
-          total: 8500,
-          importedAt: new Date().toISOString()
-        });
-      } catch (e: unknown) {
-        const msg = e instanceof Error ? e.message : String(e);
-        console.warn("Could not write demo ticket to Firestore:", msg);
-      }
+      // NOTA: modo demo NO escribe en Firestore para evitar corromper datos reales.
+      console.log("[Demo Sync] Modo simulado — sin escrituras en Firestore.");
 
       return res.json({
         success: true,
@@ -701,42 +655,7 @@ export function starposRoutes({ firestoreDb }: { firestoreDb: Firestore }): Rout
     }
   });
 
-  // Debug: consultar productos por keyword
-  router.get("/debug-products", async (req, res) => {
-    const token = req.headers['x-cron-token'];
-    if (token !== process.env.CRON_SECRET_TOKEN) {
-      return res.status(401).json({ error: 'Token invalido' });
-    }
-    const keyword = (req.query.q as string || '').toLowerCase();
-    if (!keyword) return res.json({ error: 'Pasa ?q=keyword' });
-
-    const adminDb = getAdminFirestore();
-    if (!adminDb) return res.status(500).json({ error: 'Admin DB no disponible' });
-
-    const snap = await adminDb.collection('products').get();
-    const matches = snap.docs
-      .map(d => ({ id: d.id, ...d.data() }))
-      .filter((p: any) => p.name && p.name.toLowerCase().includes(keyword))
-      .map((p: any) => ({ id: p.id, name: p.name, barcode: p.barcode || '', price: p.price, category: p.category }));
-
-    return res.json({ total: matches.length, products: matches });
-  });
-
-  router.post("/clean-bad-barcodes", async (req, res) => {
-    const token = req.headers['x-cron-token'];
-    if (token !== process.env.CRON_SECRET_TOKEN) {
-      return res.status(401).json({ error: 'Token invalido' });
-    }
-    try {
-      const result = await cleanBadBarcodes();
-      return res.json(result);
-    } catch (err: unknown) {
-      const msg = err instanceof Error ? err.message : String(err);
-      return res.status(500).json({ success: false, error: msg });
-    }
-  });
-
-    // Populate barcodes: one-shot para cruzar nombres Firestore↔StarPOS y grabar barcodes
+  // Populate barcodes: one-shot para cruzar nombres Firestore↔StarPOS y grabar barcodes
   // Protegido con cron token (mismo que auto-sync)
   router.post("/populate-barcodes", async (req, res) => {
     const token = req.headers['x-cron-token'];

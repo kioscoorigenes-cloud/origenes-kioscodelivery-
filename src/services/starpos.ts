@@ -567,7 +567,7 @@ export interface SyncSalesResult {
 }
 
 export async function getStarPOSTickets(): Promise<StarPOSTicket[]> {
-  const response = await authenticatedFetch('/v1/Tickets');
+  const response = await authenticatedFetch('/v1/Tickets', {}, 30000);
   if (!response.ok) {
     throw new Error(`Failed to fetch tickets: Status ${response.status}`);
   }
@@ -578,7 +578,7 @@ export async function getStarPOSTickets(): Promise<StarPOSTicket[]> {
 }
 
 export async function getStarPOSClosedCash(): Promise<StarPOSClosedCash[]> {
-  const response = await authenticatedFetch('/v1/ClosedCash');
+  const response = await authenticatedFetch('/v1/ClosedCash', {}, 30000);
   if (!response.ok) {
     throw new Error(`Failed to fetch closed cash: Status ${response.status}`);
   }
@@ -1115,8 +1115,10 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
 
       // Si no hay candidatos por índice, contención como fallback (más rápido que full scan)
       if (candidateSet.size === 0) {
-        // Intentar contención solo si el nombre es corto
-        if (norm.length <= 15) {
+        // Contención como fallback — pero solo si el nombre tiene al menos 2 palabras
+        // para evitar matches espurios como "pan" → "PAN LACTAL" o "sal" → "SALSA"
+        const wordCount = norm.split(/\s+/).filter(w => w.length > 1).length;
+        if (norm.length <= 15 && wordCount >= 2) {
           const contained = starposItems.find(sp => sp.normName.includes(norm) || norm.includes(sp.normName));
           if (contained) return { price: contained.price, spName: contained.name, inStock: contained.inStock };
         }
@@ -1209,6 +1211,41 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
           }
           if (sizedBest && sizedCount === 1) return sizedBest;
         }
+
+        // 5. Desambiguar por cantidad de palabras de la app presentes en el match
+        // El candidato con más palabras de la app es más probable que sea correcto
+        let bestWordOverlap = 0;
+        let overlapBest: { price: number; spName: string; inStock: boolean } | null = null;
+        let overlapCount = 0;
+        for (const idx of candidateSet) {
+          const sp = starposItems[idx];
+          let score = 0;
+          for (const w of appWords) {
+            if (sp.normName.includes(w)) score += w.length;
+            const aliases = brandAliases[w];
+            if (aliases) {
+              for (const alias of aliases) {
+                if (sp.normName.includes(alias)) { score += alias.length; break; }
+              }
+            }
+          }
+          for (const sw of precomputedSpWords[idx]) {
+            if (norm.includes(sw)) score += sw.length;
+          }
+          if (score !== bestScore) continue;
+
+          // Contar cuántas palabras de la app están en este candidato
+          const spNorm = sp.normName;
+          const wordOverlap = appWords.filter(w => spNorm.includes(w)).length;
+          if (wordOverlap > bestWordOverlap) {
+            bestWordOverlap = wordOverlap;
+            overlapBest = { price: sp.price, spName: sp.name, inStock: sp.inStock };
+            overlapCount = 1;
+          } else if (wordOverlap === bestWordOverlap) {
+            overlapCount++;
+          }
+        }
+        if (overlapBest && overlapCount === 1 && bestWordOverlap >= 2) return overlapBest;
       }
 
       return null;
@@ -1656,51 +1693,5 @@ export async function populateBarcodes(externalProducts?: StarPOSProduct[]): Pro
     const msg = error instanceof Error ? error.message : String(error);
     logs.push(`❌ Error: ${msg}`);
     return { success: false, populated: 0, alreadyHad: 0, noMatch: 0, logs };
-  }
-}
-
-export async function cleanBadBarcodes(): Promise<{ success: boolean; cleaned: number; kept: number; logs: string[] }> {
-  const logs: string[] = [];
-  const adminDb = getAdminDb();
-  if (!adminDb) return { success: false, cleaned: 0, kept: 0, logs: ['Admin SDK no disponible'] };
-
-  try {
-    const snapshot = await adminDb.collection('products').get();
-    let cleaned = 0, kept = 0;
-
-    const genericSingleWords = new Set([
-      'cigarrillo', 'cigarrillos', 'tabaco', 'cigarro', 'pucho',
-      'sopa', 'gaseosa', 'galletita', 'galletitas', 'chicle', 'chicles',
-      'caramelo', 'caramelos', 'alfajor', 'chocolate', 'vino', 'cerveza',
-      'fernet', 'vodka', 'whisky', 'ron', 'gin', 'champagne',
-      'yerba', 'azucar', 'sal', 'aceite', 'arroz', 'fideos',
-      'leche', 'manteca', 'queso', 'jamon', 'pan',
-    ]);
-
-    for (const doc of snapshot.docs) {
-      const d = doc.data();
-      const barcode = typeof d.barcode === 'string' ? d.barcode.trim() : '';
-      const name = (d.name as string) || '';
-      if (!barcode || !name) continue;
-
-      const nameLower = name.toLowerCase().trim();
-      const words = nameLower.split(/\s+/).filter((w: string) => w.length > 2);
-
-      if (words.length <= 1 && genericSingleWords.has(nameLower.replace(/\s+/g, ''))) {
-        logs.push('Limpiado: "' + name + '" barcode ' + barcode + ' (nombre generico de 1 palabra)');
-        await adminDb.collection('products').doc(doc.id).update({ barcode: '' });
-        cleaned++;
-        continue;
-      }
-
-      kept++;
-    }
-
-    logs.push('Limpieza finalizada: ' + cleaned + ' barcodes removidos, ' + kept + ' productos conservados.');
-    return { success: true, cleaned, kept, logs };
-  } catch (error: unknown) {
-    const msg = error instanceof Error ? error.message : String(error);
-    logs.push('Error: ' + msg);
-    return { success: false, cleaned: 0, kept: 0, logs };
   }
 }
