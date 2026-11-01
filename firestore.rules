@@ -122,7 +122,8 @@ service cloud.firestore {
       allow update: if isAdmin() &&
                     isValidOrder(request.resource.data) &&
                     hasOnlyOrderFields(request.resource.data);
-      allow delete: if false;
+      // RULES-01: super-admins pueden eliminar órdenes canceladas/de prueba
+      allow delete: if isSuperAdmin();
     }
 
     match /banners/{bannerId} {
@@ -204,6 +205,11 @@ service cloud.firestore {
     }
 
     match /starpos_imported_sales/{saleId} {
+      allow read, write: if isAdmin();
+    }
+
+    // DATA-03: precios flaggeados para revisión admin
+    match /priceFlagged/{productId} {
       allow read, write: if isAdmin();
     }
 

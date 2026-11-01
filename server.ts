@@ -1,3 +1,4 @@
+import { logger } from "./src/services/logger";
 // Primero de todo: carga el .env antes de que cualquier modulo lea process.env.
 import 'dotenv/config';
 import express from "express";
@@ -23,11 +24,11 @@ const firestoreDb = getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId
 
 // ERR-02: handlers globales para errores no capturados
 process.on('uncaughtException', (err) => {
-  console.error('[FATAL] uncaughtException:', err.message);
+  logger.fatal({ err }, 'uncaughtException');
   setTimeout(() => process.exit(1), 1000);
 });
 process.on('unhandledRejection', (reason) => {
-  console.error('[WARN] unhandledRejection:', reason instanceof Error ? reason.message : reason);
+  logger.warn({ reason: reason instanceof Error ? reason.message : reason }, 'unhandledRejection');
 });
 
 async function startServer() {
@@ -153,23 +154,23 @@ async function startServer() {
   }
 
   const server = app.listen(PORT, "0.0.0.0", () => {
-    console.log(`Server running on http://localhost:${PORT}`);
+    logger.info(`Server running on http://localhost:${PORT}`);
   });
 
   // ERR-04: graceful shutdown
   const shutdown = (signal: string) => {
-    console.log(`[${signal}] Cerrando servidor...`);
+    logger.info({ signal }, 'Cerrando servidor...');
     server.close(() => {
-      console.log('Servidor cerrado.');
+      logger.info('Servidor cerrado.');
       process.exit(0);
     });
-    setTimeout(() => { console.error('Forzando cierre tras 10s'); process.exit(1); }, 10000);
+    setTimeout(() => { logger.error('Forzando cierre tras 10s'); process.exit(1); }, 10000);
   };
   process.on('SIGTERM', () => shutdown('SIGTERM'));
   process.on('SIGINT', () => shutdown('SIGINT'));
 }
 
 startServer().catch((err) => {
-  console.error('❌ Error fatal al iniciar el servidor:', err);
+  logger.fatal({ err }, 'Error fatal al iniciar el servidor');
   process.exit(1);
 });

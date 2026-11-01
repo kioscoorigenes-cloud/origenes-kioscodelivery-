@@ -1,3 +1,4 @@
+import { logger } from "../services/logger";
 // Extraido de server.ts: los handlers se agruparon por dominio.
 import { Router } from "express";
 import rateLimit from "express-rate-limit";
@@ -33,7 +34,7 @@ export function storeRoutes(): Router {
 
       return res.json({ available: snap.empty });
     } catch (e: any) {
-      console.warn("[FreeShipping] no se pudo consultar:", e.message);
+      logger.warn({ err: e.message }, "[FreeShipping] no se pudo consultar");
       return res.json({ available: false });
     }
   });

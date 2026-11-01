@@ -18,6 +18,10 @@ export interface Product {
   sku?: string;
   /** Cantidad en stock (unidades disponibles) */
   stockQty?: number;
+  /** ID del impuesto en StarPOS (default: tax_iva_21) */
+  taxId?: string;
+  /** Porcentaje de IVA (default: 21) */
+  taxPct?: number;
 }
 
 export interface OrderItem {

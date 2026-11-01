@@ -2450,7 +2450,7 @@ className="bg-slate-800 hover:bg-slate-700 text-sky-400 border border-slate-700/
           <div className="flex flex-col gap-3">
             
             {/* SUBTAB SELECTOR */}
-            <div className="flex bg-slate-100 rounded-xl p-1 gap-1 border border-slate-200 mt-0.5" id="subtab-selector">
+            <div className="flex bg-slate-100 rounded-xl p-1 gap-1 border border-slate-200 mt-0.5" id="subtab-selector" role="tablist" aria-label="Secciones del panel">
               <button 
                 type="button"
                 onClick={() => setProductViewSubTab('carga_rapida')}

@@ -1,3 +1,4 @@
+import { logger } from "./logger";
 import { doc, getDoc, getDocs, updateDoc, collection, setDoc } from 'firebase/firestore';
 // CQ-01: reutilizar getAdminFirestore centralizado en vez de duplicar init
 import { getAdminFirestore as getAdminDb } from './serverAuth';
@@ -269,7 +270,7 @@ export async function authenticateStarPOS(forceRefresh = false): Promise<string>
     clearTimeout(timeoutId);
     const err = error instanceof Error ? error : new Error(String(error));
     const msg = err.name === 'AbortError' ? 'timeout (StarPOS no respondió en 10s)' : err.message;
-    console.error(`StarPOS Auth Error at ${authUrl}:`, msg);
+    logger.error({ url: authUrl, detail: msg }, 'StarPOS Auth Error');
     throw new Error(`Error de autenticación StarPOS: ${msg}`);
   }
   })().finally(() => { authInFlight = null; });
@@ -1538,6 +1539,18 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
           priceDropNames.push(`${fp.name}: $${fp.price} → $${starposPrice} (SP: ${match.spName})`);
         }
         priceDropCount++;
+        // DATA-03: flaggear para revisión admin en vez de solo skipear
+        if (adminDb) {
+          const flagData = {
+            productId: fp.id, productName: fp.name,
+            currentPrice: fp.price, starposPrice,
+            starposName: match.spName, dropPercent: Math.round(dropPercent),
+            flaggedAt: new Date().toISOString(), reviewed: false,
+          };
+          updatePromises.push(
+            adminDb.collection('priceFlagged').doc(fp.id).set(flagData, { merge: true }).then(() => {})
+          );
+        }
         continue;
       }
 
