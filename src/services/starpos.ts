@@ -1658,3 +1658,49 @@ export async function populateBarcodes(externalProducts?: StarPOSProduct[]): Pro
     return { success: false, populated: 0, alreadyHad: 0, noMatch: 0, logs };
   }
 }
+
+export async function cleanBadBarcodes(): Promise<{ success: boolean; cleaned: number; kept: number; logs: string[] }> {
+  const logs: string[] = [];
+  const adminDb = getAdminDb();
+  if (!adminDb) return { success: false, cleaned: 0, kept: 0, logs: ['Admin SDK no disponible'] };
+
+  try {
+    const snapshot = await adminDb.collection('products').get();
+    let cleaned = 0, kept = 0;
+
+    const genericSingleWords = new Set([
+      'cigarrillo', 'cigarrillos', 'tabaco', 'cigarro', 'pucho',
+      'sopa', 'gaseosa', 'galletita', 'galletitas', 'chicle', 'chicles',
+      'caramelo', 'caramelos', 'alfajor', 'chocolate', 'vino', 'cerveza',
+      'fernet', 'vodka', 'whisky', 'ron', 'gin', 'champagne',
+      'yerba', 'azucar', 'sal', 'aceite', 'arroz', 'fideos',
+      'leche', 'manteca', 'queso', 'jamon', 'pan',
+    ]);
+
+    for (const doc of snapshot.docs) {
+      const d = doc.data();
+      const barcode = typeof d.barcode === 'string' ? d.barcode.trim() : '';
+      const name = (d.name as string) || '';
+      if (!barcode || !name) continue;
+
+      const nameLower = name.toLowerCase().trim();
+      const words = nameLower.split(/\s+/).filter((w: string) => w.length > 2);
+
+      if (words.length <= 1 && genericSingleWords.has(nameLower.replace(/\s+/g, ''))) {
+        logs.push('Limpiado: "' + name + '" barcode ' + barcode + ' (nombre generico de 1 palabra)');
+        await adminDb.collection('products').doc(doc.id).update({ barcode: '' });
+        cleaned++;
+        continue;
+      }
+
+      kept++;
+    }
+
+    logs.push('Limpieza finalizada: ' + cleaned + ' barcodes removidos, ' + kept + ' productos conservados.');
+    return { success: true, cleaned, kept, logs };
+  } catch (error: unknown) {
+    const msg = error instanceof Error ? error.message : String(error);
+    logs.push('Error: ' + msg);
+    return { success: false, cleaned: 0, kept: 0, logs };
+  }
+}
