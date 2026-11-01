@@ -270,6 +270,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [syncingSales, setSyncingSales] = useState<boolean>(false);
   const [syncingStockDirect, setSyncingStockDirect] = useState<boolean>(false);
   const [syncingPrices, setSyncingPrices] = useState<boolean>(false);
+  const [syncingNow, setSyncingNow] = useState<boolean>(false);
   const [starposSales, setStarposSales] = useState<any[]>([]);
   const [loadingSales, setLoadingSales] = useState<boolean>(false);
   const [runningDiagnostic, setRunningDiagnostic] = useState<boolean>(false);
@@ -615,7 +616,28 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     }
   };
 
-  // Handle direct stock sync from /v1/CurrentStock
+  // Handle "Sincronizar Ahora" — ventas + precios en un solo click
+  const handleSyncNow = async () => {
+    setSyncingNow(true);
+    setStarposLogs(["🚀 Sincronizacion completa iniciada (ventas + precios)..."]);
+    try {
+      const res = await authedFetch('/api/starpos/sync-now', { method: 'POST' });
+      const data = await res.json();
+      setStarposLogs(data.logs || ["Sincronizacion finalizada."]);
+      if (data.success) {
+        showToast("¡Sync Completa! Ventas y precios actualizados desde StarPOS. ✅");
+      } else {
+        showToast("Sync con errores: " + (data.error || "Revisa los logs.") + " ❌");
+      }
+    } catch (err: any) {
+      setStarposLogs([`❌ Error: ${err.message}`]);
+      showToast("Error de conexion: " + err.message + " ❌");
+    } finally {
+      setSyncingNow(false);
+    }
+  };
+
+    // Handle direct stock sync from /v1/CurrentStock
   const handleSyncStockDirectStarPOS = async () => {
     setSyncingStockDirect(true);
     setStarposLogs(["Iniciando consulta directa de stock actual (/v1/CurrentStock)..."]);
@@ -3748,7 +3770,26 @@ className="bg-slate-800 hover:bg-slate-700 text-sky-400 border border-slate-700/
                     </div>
                   </button>
 
-                  {/* SYNC STOCK DIRECT BUTTON */}
+                  {/* SYNC NOW — boton principal para German */}
+                  <button
+                    onClick={handleSyncNow}
+                    disabled={syncingCatalog || syncingSales || syncingStockDirect || syncingPrices || syncingNow}
+                    className="p-4 bg-emerald-50 hover:bg-emerald-100 border-2 border-emerald-300 hover:border-emerald-400 rounded-xl flex flex-col items-center justify-center text-center gap-2 transition-all active:scale-98 cursor-pointer group col-span-2"
+                  >
+                    <span className="text-xl group-hover:scale-110 transition-transform">
+                      {syncingNow ? "⏳" : "⚡"}
+                    </span>
+                    <div>
+                      <span className="text-xs font-black text-emerald-700 block">
+                        Sincronizar Ahora
+                      </span>
+                      <span className="text-[10px] text-emerald-500 font-bold block mt-0.5">
+                        Ventas + Precios en un click
+                      </span>
+                    </div>
+                  </button>
+
+                                    {/* SYNC STOCK DIRECT BUTTON */}
                   <button
                     onClick={handleSyncStockDirectStarPOS}
                     disabled={syncingCatalog || syncingSales || syncingStockDirect}

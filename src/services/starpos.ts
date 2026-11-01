@@ -1,24 +1,6 @@
 import { doc, getDoc, getDocs, updateDoc, collection, setDoc } from 'firebase/firestore';
-import { initializeApp as initAdminApp, getApps as getAdminApps, cert } from 'firebase-admin/app';
-import { getFirestore as getAdminFirestoreInstance, Firestore as AdminFirestore } from 'firebase-admin/firestore';
-import firebaseConfig from '../../firebase-applet-config.json';
-
-let adminDbInstance: AdminFirestore | null = null;
-function getAdminDb(): AdminFirestore | null {
-  if (adminDbInstance) return adminDbInstance;
-  const raw = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
-  if (!raw) return null;
-  try {
-    const serviceAccount = JSON.parse(raw);
-    const apps = getAdminApps();
-    const app = apps.length > 0 ? apps[0] : initAdminApp({ credential: cert(serviceAccount) });
-    adminDbInstance = getAdminFirestoreInstance(app, firebaseConfig.firestoreDatabaseId);
-    return adminDbInstance;
-  } catch (e) {
-    console.error('Failed to initialize firebase-admin:', e);
-    return null;
-  }
-}
+// CQ-01: reutilizar getAdminFirestore centralizado en vez de duplicar init
+import { getAdminFirestore as getAdminDb } from './serverAuth';
 import { db } from '../firebase';
 import { Product } from '../types';
 
@@ -312,9 +294,15 @@ async function authenticatedFetch(endpoint: string, options: RequestInit = {}, t
     }
   };
 
+  // STAR-02: un solo reintento con token fresco; sin loop infinito.
   let res = await doFetch(await authenticateStarPOS());
   if (res.status === 401 || res.status === 403) {
+    // Esperar 500ms antes de reintentar (backoff minimo)
+    await new Promise(r => setTimeout(r, 500));
     res = await doFetch(await authenticateStarPOS(true));
+    if (res.status === 401 || res.status === 403) {
+      throw new Error(`StarPOS devolvio ${res.status} despues de re-autenticar. Verifica las credenciales.`);
+    }
   }
   return res;
 }

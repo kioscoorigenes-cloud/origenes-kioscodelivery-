@@ -59,6 +59,11 @@ export function handleFirestoreError(error: unknown, operationType: OperationTyp
     operationType,
     path
   };
-  console.error('Firestore Error details: ', JSON.stringify(errInfo));
+  // SEC-04: en produccion no loguear PII (email, uid); solo en dev.
+  if (import.meta.env.DEV) {
+    console.error('Firestore Error details: ', JSON.stringify(errInfo));
+  } else {
+    console.error('Firestore Error:', errInfo.error, '| op:', errInfo.operationType, '| path:', errInfo.path);
+  }
   throw new Error(JSON.stringify(errInfo));
 }

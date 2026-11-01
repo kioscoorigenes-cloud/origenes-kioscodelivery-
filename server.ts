@@ -20,6 +20,15 @@ import { starposRoutes } from "./src/routes/starpos";
 const firebaseApp = initializeApp(firebaseConfig);
 const firestoreDb = getFirestore(firebaseApp, firebaseConfig.firestoreDatabaseId);
 
+// ERR-02: handlers globales para errores no capturados
+process.on('uncaughtException', (err) => {
+  console.error('[FATAL] uncaughtException:', err.message);
+  setTimeout(() => process.exit(1), 1000);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[WARN] unhandledRejection:', reason instanceof Error ? reason.message : reason);
+});
+
 async function startServer() {
   const app = express();
   // Railway / Render / Fly inyectan el puerto por entorno; 3000 en local.
@@ -32,6 +41,8 @@ async function startServer() {
     contentSecurityPolicy: {
       directives: {
         defaultSrc: ["'self'"],
+        // SEC-06: prevenir clickjacking
+        frameAncestors: ["'none'"],
         scriptSrc: ["'self'", "'unsafe-inline'", "'unsafe-eval'", 'https://apis.google.com', 'https://accounts.google.com'],
         styleSrc: ["'self'", "'unsafe-inline'", 'https://fonts.googleapis.com'],
         fontSrc: ["'self'", 'https://fonts.gstatic.com', 'data:'],
@@ -79,7 +90,8 @@ async function startServer() {
     message: { error: 'Demasiadas solicitudes. Intentá de nuevo en un minuto.' },
   }));
 
-  app.use(express.json({ limit: '20mb' }));
+  // SEC-05: body limit reducido; los uploads van por Supabase Storage, no por JSON.
+  app.use(express.json({ limit: '1mb' }));
 
   // ── Health check (Railway, uptime monitors, etc.) ──────────────────
   app.get('/health', (_req, res) => {

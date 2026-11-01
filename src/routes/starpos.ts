@@ -402,7 +402,52 @@ export function starposRoutes({ firestoreDb }: { firestoreDb: Firestore }): Rout
     return res.json({ running: false, message: "No hay sincronización reciente." });
   });
 
-  // Pull prices con cron-token (para testing sin auth Firebase)
+  // ==========================================
+  // SYNC-NOW: boton para que German/admins sincronicen al instante
+  // despues de cargar mercaderia con el lector en StarPOS.
+  // Ejecuta ventas + precios en una sola llamada.
+  // ==========================================
+  router.post("/sync-now", requireAdmin, async (_req, res) => {
+    try {
+      const adminDb = getAdminFirestore();
+      if (!adminDb) {
+        return res.status(500).json({ success: false, error: "Firebase admin no disponible" });
+      }
+
+      const snap = await adminDb.collection("products").get();
+      const products: Record<string, unknown>[] = [];
+      snap.forEach(d => products.push({ id: d.id, ...d.data() }));
+
+      const logs: string[] = ["🚀 Sync manual iniciada..."];
+
+      // 1. Ventas y stock
+      let salesOk = false;
+      try {
+        const salesResult = await syncSalesAndDiscountStock(products as any[]);
+        salesOk = salesResult.success;
+        logs.push(`Ventas: ${salesResult.ticketsFetched} tickets, ${salesResult.stockReductions?.length || 0} reducciones de stock`);
+      } catch (e: any) {
+        logs.push(`⚠️ Ventas: ${e.message}`);
+      }
+
+      // 2. Precios
+      let pricesOk = false;
+      try {
+        const pricesResult = await pullPricesFromStarPOS();
+        pricesOk = pricesResult.success;
+        logs.push(`Precios: ${pricesResult.updatedCount || 0} actualizados`);
+      } catch (e: any) {
+        logs.push(`⚠️ Precios: ${e.message}`);
+      }
+
+      logs.push(salesOk || pricesOk ? "✅ Sync completada" : "❌ Ambas operaciones fallaron");
+      return res.json({ success: salesOk || pricesOk, logs });
+    } catch (err: any) {
+      return res.status(502).json({ success: false, error: err.message });
+    }
+  });
+
+    // Pull prices con cron-token (para testing sin auth Firebase)
   router.post("/pull-prices-cron", async (req, res) => {
     const token = req.headers["x-cron-token"];
     const expected = process.env.CRON_SECRET_TOKEN;
@@ -590,7 +635,7 @@ export function starposRoutes({ firestoreDb }: { firestoreDb: Firestore }): Rout
         const resp = await fetch(authUrl, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ userId, secret }),
+          body: JSON.stringify({ user_id: userId, secret, service: "https://starpos.com/api" }),
           signal: controller.signal,
         });
         clearTimeout(timeoutId);

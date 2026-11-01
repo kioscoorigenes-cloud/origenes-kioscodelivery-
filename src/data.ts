@@ -27,7 +27,7 @@ export const CAT_ABBR: Record<string, string> = {
   kiosco: "KIO",
   almacen: "ALM",
   fiambres: "FIA",
-  mascotas: "PER",
+  mascotas: "MAS",
   limpieza: "LIM",
   perfumeria: "PER",
   bebidas_blancas: "BLA",

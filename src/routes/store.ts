@@ -48,7 +48,14 @@ export function storeRoutes(): Router {
       const adminDb = getAdminFirestore();
       if (!adminDb) return res.status(500).json({ error: "Firebase Admin no configurado" });
 
-      const snap = await adminDb.collection("products").get();
+      const pageSize = Math.min(Number(req.query.limit) || 200, 500);
+      let query = adminDb.collection("products").orderBy("__name__").limit(pageSize);
+      if (req.query.startAfter && typeof req.query.startAfter === 'string') {
+        const startDoc = await adminDb.collection("products").doc(req.query.startAfter).get();
+        if (startDoc.exists) query = query.startAfter(startDoc);
+      }
+
+      const snap = await query.get();
       const products: any[] = [];
       snap.forEach((doc: any) => {
         const d = doc.data();
@@ -62,7 +69,8 @@ export function storeRoutes(): Router {
           imageUrl: d.imageUrl || ""
         });
       });
-      return res.json({ total: products.length, products });
+      const lastId = products.length > 0 ? products[products.length - 1].id : null;
+      return res.json({ total: products.length, products, nextStartAfter: lastId, hasMore: products.length === pageSize });
     } catch (e: any) {
       return res.status(500).json({ error: e.message });
     }
