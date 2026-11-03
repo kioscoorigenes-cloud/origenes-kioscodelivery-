@@ -1259,6 +1259,57 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [showBarcodeCamera]);
 
+  // Lector de código de barras USB/Bluetooth — detecta tipeo rápido + Enter
+  useEffect(() => {
+    let buffer = '';
+    let lastKeyTime = 0;
+    const SCAN_THRESHOLD_MS = 80; // max ms entre teclas de un scanner
+    const MIN_BARCODE_LENGTH = 4; // mínimo largo de un barcode válido
+
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Ignorar si hay un input/textarea enfocado (el usuario está escribiendo)
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT') return;
+
+      const now = Date.now();
+
+      if (e.key === 'Enter' && buffer.length >= MIN_BARCODE_LENGTH) {
+        e.preventDefault();
+        const code = buffer;
+        buffer = '';
+        // Buscar producto y abrir en edición
+        const found = products.find(p => p.barcode === code || p.codigoFacturador === code);
+        if (found) {
+          setCurrentTab('productos');
+          populateEditForm(found);
+          showToast('✅ Producto encontrado: ' + found.name);
+        } else {
+          setCurrentTab('productos');
+          resetFormState();
+          setFormBarcode(code);
+          setShowingAddForm(true);
+          showToast('Código ' + code + ' no encontrado — podés cargarlo como nuevo');
+        }
+        return;
+      }
+
+      // Solo dígitos (barcodes son numéricos)
+      if (/^\d$/.test(e.key)) {
+        if (now - lastKeyTime > SCAN_THRESHOLD_MS * 3) {
+          buffer = ''; // reset si pasó mucho tiempo
+        }
+        buffer += e.key;
+        lastKeyTime = now;
+      } else if (e.key !== 'Enter') {
+        buffer = ''; // caracter no numérico, reset
+      }
+    };
+
+    document.addEventListener('keydown', handleKeyDown);
+    return () => document.removeEventListener('keydown', handleKeyDown);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [products]);
+
   // Foto propia desde el dispositivo: comprime y sube a Firebase Storage.
   // Si Storage no esta disponible, guarda la foto comprimida dentro del
   // producto (fallback), asi la funcion nunca deja de andar.
