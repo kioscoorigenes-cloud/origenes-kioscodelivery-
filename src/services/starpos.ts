@@ -5,6 +5,58 @@ import { getAdminFirestore as getAdminDb } from './serverAuth';
 import { db } from '../firebase';
 import { Product } from '../types';
 
+// Auto-categorización por nombre de producto
+// Se usa cuando un producto no tiene categoría asignada (cat vacío)
+export function guessCategoryFromName(name: string): string {
+  const n = name.toLowerCase();
+  const has = (...kw: string[]) => kw.some(k => n.includes(k));
+
+  // Cigarrillos
+  if (has('cigarrillo', 'marlboro', 'camel', 'lucky strike', 'chesterfield', 'philip morris', 'jockey', 'pall mall', 'red point', 'next ')) return 'cigarrillos';
+  // Cervezas
+  if (has('cerveza', 'quilmes', 'brahma', 'stella', 'patagonia', 'heineken', 'corona extra', 'budweiser', 'andes cerveza', 'imperial cerveza', 'salta cerveza')) return 'cervezas';
+  // Energizantes
+  if (has('energizante', 'red bull', 'speed', 'monster energy', 'gatorade', 'powerade', 'electrolit')) return 'energizantes';
+  // Fernet
+  if (has('fernet', 'branca')) return 'fernet';
+  // Vinos
+  if (has('vino ', 'malbec', 'cabernet', 'torrontes', 'champagne', 'espumante', 'sidra')) return 'vinos';
+  // Bebidas blancas
+  if (has('vodka', 'whisky', 'whiskey', 'gin ', 'ron ', 'tequila', 'aperol', 'campari', 'licor', 'cognac', 'grappa')) return 'bebidas_blancas';
+  // Aperitivos
+  if (has('aperitivo', 'gancia', 'cinzano', 'vermouth', 'cynar', 'amargo')) return 'aperitivos';
+  // Gaseosas
+  if (has('coca cola', 'coca-cola', 'pepsi', 'sprite', 'fanta', 'seven up', '7up', 'schweppes', 'paso de los toros', 'manaos', 'gaseosa', 'mirinda', 'levite')) return 'gaseosas';
+  // Aguas saborizadas
+  if (has('agua saborizada', 'villa del sur saborizada', 'ser agua', 'aquarius')) return 'aguas_saborizadas';
+  // Aguas
+  if (has('agua mineral', 'agua ', 'villa del sur', 'villavicencio', 'eco de los andes')) return 'aguas';
+  // Helados
+  if (has('helado', 'paleta', 'bon o bon helado', 'frigor', 'arcor helado', 'pote helado')) return 'helados';
+  // Congelados
+  if (has('congelado', 'hamburguesa', 'medallon', 'nugget', 'empanada cong', 'milanesa cong', 'papas fritas cong')) return 'congelados';
+  // Lácteos
+  if (has('leche ', 'yogur', 'queso crema', 'manteca', 'dulce de leche', 'crema de leche', 'serenisima', 'ilolay')) return 'lacteos';
+  // Panificados
+  if (has('pan ', 'pan de', 'facturas', 'medialunas', 'tostada', 'bizcocho')) return 'panificados';
+  // Fiambres
+  if (has('jamon', 'queso', 'salame', 'mortadela', 'salchicha', 'fiambre', 'bondiola', 'paleta', 'lomito')) return 'fiambres';
+  // Snacks
+  if (has('papa frita', 'papas frita', 'chizito', 'palito', 'lays', 'doritos', 'cheetos', 'pringles', 'snack', 'mani ', 'pochoclo')) return 'snacks';
+  // Limpieza
+  if (has('detergente', 'lavandina', 'desinfectante', 'limpiador', 'trapo', 'esponja', 'bolsa basura', 'suavizante', 'skip', 'ala ', 'cif ', 'procenex', 'lysoform')) return 'limpieza';
+  // Perfumería / Higiene
+  if (has('shampoo', 'acondicionador', 'desodorante', 'antitranspirante', 'jabon', 'jabón', 'rexona', 'dove', 'axe ', 'nivea', 'colgate', 'oral-b', 'cepillo dental', 'pasta dental', 'crema dental', 'pañal', 'toallita', 'protector diario', 'doncella', 'always', 'gillette', 'prestobarba')) return 'perfumeria';
+  // Mascotas
+  if (has('perro', 'gato', 'mascota', 'dog chow', 'purina', 'pedigree', 'whiskas', 'cat chow', 'alimento perro', 'alimento gato')) return 'mascotas';
+  // Almacén
+  if (has('arroz', 'fideo', 'harina', 'azucar', 'aceite', 'sal ', 'atun', 'pure de tomate', 'salsa', 'mermelada', 'galletita', 'galleta', 'yerba', 'mate ', 'cafe ', 'te ', 'polenta', 'avena', 'cacao', 'mayonesa', 'mostaza', 'ketchup')) return 'almacen';
+  // Kiosco (golosinas, chocolates, chicles, etc)
+  if (has('chocolate', 'caramelo', 'chicle', 'gomita', 'alfajor', 'turron', 'bombon', 'bon o bon', 'arcor', 'beldent', 'mogul', 'sugus', 'flynn paff', 'paleta', 'chupet')) return 'kiosco';
+
+  return ''; // no se pudo determinar
+}
+
 // Types for StarPOS API Entities
 export interface StarPOSTax {
   id: string;
@@ -1463,7 +1515,7 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
 
     // Leer productos de Firestore con admin SDK (no consume cuota del cliente).
     // Fallback a DEFAULT_PRODUCTS si admin no está disponible.
-    let firestoreProducts: { id: string; name: string; price: number; inStock?: boolean; barcode?: string }[] = [];
+    let firestoreProducts: { id: string; name: string; price: number; inStock?: boolean; barcode?: string; cat?: string; name_lower?: string }[] = [];
 
     if (adminDb) {
       try {
@@ -1476,7 +1528,9 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
               name: data.name as string || '',
               price: typeof data.price === 'number' ? data.price : 0,
               inStock: data.inStock !== false,
-              barcode: typeof data.barcode === 'string' ? data.barcode.trim() : undefined
+              barcode: typeof data.barcode === 'string' ? data.barcode.trim() : undefined,
+              cat: typeof data.cat === 'string' ? data.cat : undefined,
+              name_lower: typeof data.name_lower === 'string' ? data.name_lower : undefined
             };
           })
           .filter(p => p.name); // solo los que tienen nombre
@@ -1550,9 +1604,17 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
         // Aunque el precio sea igual, si el stock cambió hay que actualizar
         const currentInStock = fp.inStock !== false; // default true si no existe
         if (match.inStock !== currentInStock) {
+          const stockData: Record<string, any> = { inStock: match.inStock };
+          if (!fp.cat) {
+            const guessed = guessCategoryFromName(fp.name);
+            if (guessed) stockData.cat = guessed;
+          }
+          if (!fp.name_lower && fp.name) {
+            stockData.name_lower = fp.name.trim().toLowerCase();
+          }
           const stockUpdateFn = adminDb
-            ? adminDb.collection('products').doc(fp.id).set({ inStock: match.inStock }, { merge: true })
-            : setDoc(doc(db, 'products', fp.id), { inStock: match.inStock }, { merge: true });
+            ? adminDb.collection('products').doc(fp.id).set(stockData, { merge: true })
+            : setDoc(doc(db, 'products', fp.id), stockData, { merge: true });
           updatePromises.push(stockUpdateFn.then(() => {}));
           stockChangedCount++;
           if (stockChangedCount <= 10) {
@@ -1589,8 +1651,16 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
       }
 
       // Actualizar precio y stock desde StarPOS — no tocar nada más (fotos, nombre, categoría)
+      // Si no tiene categoría, intentar asignarla automáticamente por nombre
       // Usar set+merge en vez de update para no fallar si el doc no existe aún
-      const updateData: { price: number; inStock: boolean } = { price: starposPrice, inStock: match.inStock };
+      const updateData: Record<string, any> = { price: starposPrice, inStock: match.inStock };
+      if (!fp.cat) {
+        const guessed = guessCategoryFromName(fp.name);
+        if (guessed) updateData.cat = guessed;
+      }
+      if (!fp.name_lower && fp.name) {
+        updateData.name_lower = fp.name.trim().toLowerCase();
+      }
       const updateFn = adminDb
         ? adminDb.collection('products').doc(fp.id).set(updateData, { merge: true })
         : setDoc(doc(db, 'products', fp.id), updateData, { merge: true });
