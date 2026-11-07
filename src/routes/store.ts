@@ -77,5 +77,42 @@ export function storeRoutes(): Router {
     }
   });
 
+  // PATCH masivo: asignar cat + name_lower a productos sin categoria.
+  router.post('/patch-products', async (req, res) => {
+    const token = req.headers['x-cron-token'];
+    const expected = process.env.CRON_SECRET_TOKEN;
+    if (!expected || token !== expected) {
+      return res.status(401).json({ error: 'Token invalido' });
+    }
+    try {
+      const adminDb = getAdminFirestore();
+      if (!adminDb) return res.status(500).json({ error: 'Firebase Admin no configurado' });
+      const { ids, cat } = req.body as { ids: string[]; cat: string };
+      if (!ids?.length || !cat) return res.status(400).json({ error: 'ids[] y cat requeridos' });
+      let updated = 0;
+      for (let i = 0; i < ids.length; i += 400) {
+        const batch = adminDb.batch();
+        const chunk = ids.slice(i, i + 400);
+        for (const id of chunk) {
+          const ref = adminDb.collection('products').doc(id);
+          const snap = await ref.get();
+          if (snap.exists) {
+            const data = snap.data()!;
+            const updates: Record<string, any> = { cat };
+            if (!data.name_lower && data.name) {
+              updates.name_lower = (data.name as string).trim().toLowerCase();
+            }
+            batch.update(ref, updates);
+            updated++;
+          }
+        }
+        await batch.commit();
+      }
+      return res.json({ success: true, updated });
+    } catch (e: any) {
+      return res.status(500).json({ error: e.message });
+    }
+  });
+
   return router;
 }
