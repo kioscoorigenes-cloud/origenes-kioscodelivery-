@@ -1,4 +1,3 @@
-import { logger } from "../services/logger";
 // Extraido de server.ts: los handlers se agruparon por dominio.
 import { Router } from "express";
 import rateLimit from "express-rate-limit";
@@ -15,16 +14,24 @@ const freeShippingLimiter = rateLimit({
 export function storeRoutes(): Router {
   const router = Router();
 
+  // Envio gratis para el PRIMER pedido del dia de TODA la tienda.
+  // Se resuelve en el servidor con el Admin SDK: el cliente no puede leer
+  // /orders (las reglas lo prohiben) y hacerlo por dispositivo se reseteaba
+  // borrando datos o cambiando de telefono.
+  // Publica: la consulta la necesita cualquier comprador. Limitada por IP
+  // porque cada llamada es una lectura de Firestore.
   router.get("/free-shipping-status", freeShippingLimiter, async (_req, res) => {
     try {
       const adminDb = getAdminFirestore();
       if (!adminDb) return res.json({ available: false });
 
-      const ar = new Date(Date.now() - 3 * 60 * 60 * 1000);
-      const y = ar.getUTCFullYear();
-      const m = String(ar.getUTCMonth() + 1).padStart(2, "0");
-      const d = String(ar.getUTCDate()).padStart(2, "0");
-      const startIso = new Date(y + "-" + m + "-" + d + "T00:00:00-03:00").toISOString();
+      // Día calendario de Argentina usando IANA timezone (DATA-01: no hardcodear UTC-3).
+      const arFormatter = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'America/Argentina/Buenos_Aires',
+        year: 'numeric', month: '2-digit', day: '2-digit',
+      });
+      const todayAR = arFormatter.format(new Date()); // "YYYY-MM-DD"
+      const startIso = new Date(todayAR + "T00:00:00-03:00").toISOString();
 
       const snap = await adminDb
         .collection("orders")
@@ -34,11 +41,15 @@ export function storeRoutes(): Router {
 
       return res.json({ available: snap.empty });
     } catch (e: any) {
-      logger.warn({ err: e.message }, "[FreeShipping] no se pudo consultar");
-      return res.json({ available: false });
+      console.warn("[FreeShipping] no se pudo consultar:", e.message);
+      // ERR-03: distinguir "no hay envío gratis" de "error al consultar"
+      return res.json({ available: false, error: true });
     }
   });
 
+  // Endpoint temporal protegido para exportar productos de Firestore.
+  // Uso: GET /api/store/export-products?limit=100&startAfter=docId  (header: x-cron-token)
+  // PERF-03: paginación para no cargar todo en memoria de una vez.
   router.get("/export-products", async (req, res) => {
     const token = req.headers["x-cron-token"];
     const expected = process.env.CRON_SECRET_TOKEN;
@@ -77,24 +88,28 @@ export function storeRoutes(): Router {
     }
   });
 
-  // PATCH masivo: asignar cat + name_lower a productos sin categoria.
-  router.post('/patch-products', async (req, res) => {
-    const token = req.headers['x-cron-token'];
+  // PATCH masivo: asignar cat + name_lower a productos que lo tengan vacío.
+  // POST /api/store/patch-products  body: { ids: ["2790","2837",...], cat: "perfumeria" }
+  router.post("/patch-products", async (req, res) => {
+    const token = req.headers["x-cron-token"];
     const expected = process.env.CRON_SECRET_TOKEN;
     if (!expected || token !== expected) {
-      return res.status(401).json({ error: 'Token invalido' });
+      return res.status(401).json({ error: "Token inválido" });
     }
     try {
       const adminDb = getAdminFirestore();
-      if (!adminDb) return res.status(500).json({ error: 'Firebase Admin no configurado' });
+      if (!adminDb) return res.status(500).json({ error: "Firebase Admin no configurado" });
+
       const { ids, cat } = req.body as { ids: string[]; cat: string };
-      if (!ids?.length || !cat) return res.status(400).json({ error: 'ids[] y cat requeridos' });
+      if (!ids?.length || !cat) return res.status(400).json({ error: "ids[] y cat requeridos" });
+
       let updated = 0;
+      // Firestore batch max 500
       for (let i = 0; i < ids.length; i += 400) {
         const batch = adminDb.batch();
         const chunk = ids.slice(i, i + 400);
         for (const id of chunk) {
-          const ref = adminDb.collection('products').doc(id);
+          const ref = adminDb.collection("products").doc(id);
           const snap = await ref.get();
           if (snap.exists) {
             const data = snap.data()!;
@@ -108,7 +123,50 @@ export function storeRoutes(): Router {
         }
         await batch.commit();
       }
+
       return res.json({ success: true, updated });
+    } catch (e: any) {
+      return res.status(500).json({ error: e.message });
+    }
+  });
+
+  // One-time: marcar inStock=false los productos que no tienen stockQty
+  // (nunca pasaron por sync) y tenían inStock=true por el viejo default.
+  // POST /api/store/fix-instock-defaults  (header: x-cron-token)
+  router.post("/fix-instock-defaults", async (req, res) => {
+    const token = req.headers["x-cron-token"];
+    const expected = process.env.CRON_SECRET_TOKEN;
+    if (!expected || token !== expected) {
+      return res.status(401).json({ error: "Token inválido" });
+    }
+    try {
+      const adminDb = getAdminFirestore();
+      if (!adminDb) return res.status(500).json({ error: "Firebase Admin no configurado" });
+
+      const snapshot = await adminDb.collection("products").get();
+      let fixed = 0;
+      let skipped = 0;
+      const fixedNames: string[] = [];
+
+      for (let i = 0; i < snapshot.docs.length; i += 400) {
+        const batch = adminDb.batch();
+        const chunk = snapshot.docs.slice(i, i + 400);
+        for (const doc of chunk) {
+          const data = doc.data();
+          // Solo tocar productos que NO tienen stockQty (nunca sincronizados)
+          // y que tienen inStock !== false (true o undefined)
+          if (data.stockQty == null && data.inStock !== false) {
+            batch.update(doc.ref, { inStock: false });
+            fixed++;
+            if (fixedNames.length < 20) fixedNames.push(data.name || doc.id);
+          } else {
+            skipped++;
+          }
+        }
+        await batch.commit();
+      }
+
+      return res.json({ success: true, fixed, skipped, sampleFixed: fixedNames });
     } catch (e: any) {
       return res.status(500).json({ error: e.message });
     }

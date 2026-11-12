@@ -1,65 +1,26 @@
-import { logger } from "./logger";
 import { doc, getDoc, getDocs, updateDoc, collection, setDoc } from 'firebase/firestore';
-// CQ-01: reutilizar getAdminFirestore centralizado en vez de duplicar init
-import { getAdminFirestore as getAdminDb } from './serverAuth';
+import { initializeApp as initAdminApp, getApps as getAdminApps, cert } from 'firebase-admin/app';
+import { getFirestore as getAdminFirestoreInstance, Firestore as AdminFirestore } from 'firebase-admin/firestore';
+import firebaseConfig from '../../firebase-applet-config.json';
+
+let adminDbInstance: AdminFirestore | null = null;
+function getAdminDb(): AdminFirestore | null {
+  if (adminDbInstance) return adminDbInstance;
+  const raw = process.env.FIREBASE_SERVICE_ACCOUNT_JSON;
+  if (!raw) return null;
+  try {
+    const serviceAccount = JSON.parse(raw);
+    const apps = getAdminApps();
+    const app = apps.length > 0 ? apps[0] : initAdminApp({ credential: cert(serviceAccount) });
+    adminDbInstance = getAdminFirestoreInstance(app, firebaseConfig.firestoreDatabaseId);
+    return adminDbInstance;
+  } catch (e) {
+    console.error('Failed to initialize firebase-admin:', e);
+    return null;
+  }
+}
 import { db } from '../firebase';
 import { Product } from '../types';
-
-// Auto-categorización por nombre de producto
-// Se usa cuando un producto no tiene categoría asignada (cat vacío)
-export function guessCategoryFromName(name: string): string {
-  const n = name.toLowerCase();
-  const has = (...kw: string[]) => kw.some(k => n.includes(k));
-
-  // Cigarrillos
-  if (has('cigarrillo', 'marlboro', 'camel', 'lucky strike', 'chesterfield', 'philip morris', 'jockey', 'pall mall', 'red point', 'next ')) return 'cigarrillos';
-  // Cervezas
-  if (has('cerveza', 'quilmes', 'brahma', 'stella', 'patagonia', 'heineken', 'corona extra', 'budweiser', 'andes cerveza', 'imperial cerveza', 'salta cerveza')) return 'cervezas';
-  // Energizantes
-  if (has('energizante', 'red bull', 'speed', 'monster energy', 'gatorade', 'powerade', 'electrolit')) return 'energizantes';
-  // Fernet
-  if (has('fernet', 'branca')) return 'fernet';
-  // Vinos
-  if (has('vino ', 'malbec', 'cabernet', 'torrontes', 'champagne', 'espumante', 'sidra')) return 'vinos';
-  // Bebidas blancas
-  if (has('vodka', 'whisky', 'whiskey', 'gin ', 'ron ', 'tequila', 'aperol', 'campari', 'licor', 'cognac', 'grappa')) return 'bebidas_blancas';
-  // Aperitivos
-  if (has('aperitivo', 'gancia', 'cinzano', 'vermouth', 'cynar', 'amargo')) return 'aperitivos';
-  // Gaseosas
-  if (has('coca cola', 'coca-cola', 'pepsi', 'sprite', 'fanta', 'seven up', '7up', 'schweppes', 'paso de los toros', 'manaos', 'gaseosa', 'mirinda', 'levite')) return 'gaseosas';
-  // Aguas saborizadas
-  if (has('agua saborizada', 'villa del sur saborizada', 'ser agua', 'aquarius')) return 'aguas_saborizadas';
-  // Aguas
-  if (has('agua mineral', 'agua ', 'villa del sur', 'villavicencio', 'eco de los andes')) return 'aguas';
-  // Helados
-  if (has('helado', 'paleta', 'bon o bon helado', 'frigor', 'arcor helado', 'pote helado')) return 'helados';
-  // Congelados
-  if (has('congelado', 'hamburguesa', 'medallon', 'nugget', 'empanada cong', 'milanesa cong', 'papas fritas cong')) return 'congelados';
-  // Lácteos
-  if (has('leche ', 'yogur', 'queso crema', 'manteca', 'dulce de leche', 'crema de leche', 'serenisima', 'ilolay')) return 'lacteos';
-  // Panificados
-  if (has('pan ', 'pan de', 'facturas', 'medialunas', 'tostada', 'bizcocho')) return 'panificados';
-  // Fiambres
-  if (has('jamon', 'queso', 'salame', 'mortadela', 'salchicha', 'fiambre', 'bondiola', 'paleta', 'lomito')) return 'fiambres';
-  // Snacks
-  if (has('papa frita', 'papas frita', 'chizito', 'palito', 'lays', 'doritos', 'cheetos', 'pringles', 'snack', 'mani ', 'pochoclo')) return 'snacks';
-  // Limpieza
-  if (has('detergente', 'lavandina', 'desinfectante', 'limpiador', 'trapo', 'esponja', 'bolsa basura', 'suavizante', 'skip', 'ala ', 'cif ', 'procenex', 'lysoform')) return 'limpieza';
-  // Perfumería / Higiene
-  if (has('shampoo', 'acondicionador', 'desodorante', 'antitranspirante', 'jabon', 'jabón', 'rexona', 'dove', 'axe ', 'nivea', 'colgate', 'oral-b', 'cepillo dental', 'pasta dental', 'crema dental', 'pañal', 'toallita', 'protector diario', 'doncella', 'always', 'gillette', 'prestobarba')) return 'perfumeria';
-  // Mascotas
-  if (has('perro', 'gato', 'mascota', 'dog chow', 'purina', 'pedigree', 'whiskas', 'cat chow', 'alimento perro', 'alimento gato')) return 'mascotas';
-  // Almacén
-  if (has('arroz', 'fideo', 'harina', 'azucar', 'aceite', 'sal ', 'atun', 'pure de tomate', 'salsa', 'mermelada', 'galletita', 'galleta', 'yerba', 'mate ', 'cafe ', 'te ', 'polenta', 'avena', 'cacao', 'mayonesa', 'mostaza', 'ketchup')) return 'almacen';
-  // Kiosco (golosinas, chocolates, chicles, etc)
-  if (has('chocolate', 'caramelo', 'chicle', 'gomita', 'alfajor', 'turron', 'bombon', 'bon o bon', 'arcor', 'beldent', 'mogul', 'sugus', 'flynn paff', 'paleta', 'chupet')) return 'kiosco';
-
-  return ''; // no se pudo determinar
-}
-
-// Umbral mínimo de stock: si quedan esta cantidad o menos, la app muestra "sin stock".
-// Así Germán tiene margen antes de que realmente se agote.
-const LOW_STOCK_THRESHOLD = 3;
 
 // Types for StarPOS API Entities
 export interface StarPOSTax {
@@ -99,7 +60,7 @@ export interface StarPOSProductCode {
 
 export interface StarPOSProductTax {
   id?: string;
-  tax_id: string | number;
+  tax_id: string;
   value?: number;
 }
 
@@ -209,7 +170,6 @@ export interface StarPOSClosedCash {
 
 // Singleton state to store the access token in memory
 let cachedToken: string | null = null;
-let authInFlight: Promise<string> | null = null;
 let tokenExpiry: number = 0; // Epoch timestamp in ms
 
 /**
@@ -288,10 +248,6 @@ export async function authenticateStarPOS(forceRefresh = false): Promise<string>
     return cachedToken;
   }
 
-  // STAR-01: mutex — reutilizar autenticación en vuelo
-  if (!forceRefresh && authInFlight) return authInFlight;
-
-  authInFlight = (async () => {
   const authUrl = `${config.serviceUrl.replace(/\/$/, '')}/v1/Authenticate`;
 
   const controller = new AbortController();
@@ -326,12 +282,9 @@ export async function authenticateStarPOS(forceRefresh = false): Promise<string>
     clearTimeout(timeoutId);
     const err = error instanceof Error ? error : new Error(String(error));
     const msg = err.name === 'AbortError' ? 'timeout (StarPOS no respondió en 10s)' : err.message;
-    logger.error({ url: authUrl, detail: msg }, 'StarPOS Auth Error');
+    console.error(`StarPOS Auth Error at ${authUrl}:`, msg);
     throw new Error(`Error de autenticación StarPOS: ${msg}`);
   }
-  })().finally(() => { authInFlight = null; });
-
-  return authInFlight;
 }
 
 /**
@@ -359,15 +312,9 @@ async function authenticatedFetch(endpoint: string, options: RequestInit = {}, t
     }
   };
 
-  // STAR-02: un solo reintento con token fresco; sin loop infinito.
   let res = await doFetch(await authenticateStarPOS());
   if (res.status === 401 || res.status === 403) {
-    // Esperar 500ms antes de reintentar (backoff minimo)
-    await new Promise(r => setTimeout(r, 500));
     res = await doFetch(await authenticateStarPOS(true));
-    if (res.status === 401 || res.status === 403) {
-      throw new Error(`StarPOS devolvio ${res.status} despues de re-autenticar. Verifica las credenciales.`);
-    }
   }
   return res;
 }
@@ -534,8 +481,7 @@ export async function syncCatalogToStarPOS(products: Product[]): Promise<SyncRep
           { code: codeValue, quantity: 1 }
         ],
         products_taxes: [
-          // STAR-03: IVA configurable por producto (default 21%)
-          { tax_id: p.taxId || 'tax_iva_21', value: p.taxPct ?? 21 }
+          { tax_id: 'tax_iva_21', value: 21 }
         ],
         products_branches: [
           'branch_principal'
@@ -621,7 +567,7 @@ export interface SyncSalesResult {
 }
 
 export async function getStarPOSTickets(): Promise<StarPOSTicket[]> {
-  const response = await authenticatedFetch('/v1/Tickets', {}, 30000);
+  const response = await authenticatedFetch('/v1/Tickets');
   if (!response.ok) {
     throw new Error(`Failed to fetch tickets: Status ${response.status}`);
   }
@@ -632,7 +578,7 @@ export async function getStarPOSTickets(): Promise<StarPOSTicket[]> {
 }
 
 export async function getStarPOSClosedCash(): Promise<StarPOSClosedCash[]> {
-  const response = await authenticatedFetch('/v1/ClosedCash', {}, 30000);
+  const response = await authenticatedFetch('/v1/ClosedCash');
   if (!response.ok) {
     throw new Error(`Failed to fetch closed cash: Status ${response.status}`);
   }
@@ -708,14 +654,7 @@ export async function syncSalesAndDiscountStock(firestoreProducts: Product[]): P
       currentProducts.push({ ...(docSnap.data() as Product) });
     });
 
-    // Cap processedTicketIds to avoid unbounded growth (memory leak PERF-02).
-    // Keep only the last 5000 entries — more than enough for a kiosco.
-    const MAX_PROCESSED_IDS = 5000;
-    let existingIds = Array.from(processedTicketIds);
-    if (existingIds.length > MAX_PROCESSED_IDS) {
-      existingIds = existingIds.slice(-MAX_PROCESSED_IDS);
-    }
-    const newProcessedTicketIds: string[] = existingIds;
+    const newProcessedTicketIds: string[] = Array.from(processedTicketIds);
     let stockUpdatedCount = 0;
 
     for (const ticket of tickets) {
@@ -730,101 +669,70 @@ export async function syncSalesAndDiscountStock(firestoreProducts: Product[]): P
 
       result.logs.push(`Procesando ticket nro: ${ticket.ticket_number} (ID: ${ticket.id}). Total: $${ticket.total}`);
 
-      // Collect all writes for this ticket into a single batch (PERF-01)
-      if (adminDb) {
-        const batch = adminDb.batch();
-        let batchOps = 0;
+      // Loop over ticket lines
+      for (const line of ticket.ticket_lines) {
+        if (!line || typeof line.units !== 'number') { continue; }
+        // Find product with matching code or ID
+        const matchedProduct = currentProducts.find(p =>
+          p.id.toString() === line.product_id ||
+          p.codigoFacturador === line.product_id ||
+          (!!line.product_name && p.name.toLowerCase() === String(line.product_name).toLowerCase())
+        );
 
-        for (const line of ticket.ticket_lines) {
-          if (!line || typeof line.units !== 'number') { continue; }
-          const matchedProduct = currentProducts.find(p =>
-            p.id.toString() === line.product_id ||
-            p.codigoFacturador === line.product_id ||
-            (!!line.product_name && p.name.toLowerCase() === String(line.product_name).toLowerCase())
-          );
+        if (matchedProduct) {
+          const knownStock = (matchedProduct as unknown as Record<string, unknown>).stockQty;
+          if (typeof knownStock !== 'number') {
+            result.logs.push(`   ⚠️ "${matchedProduct.name}": stock desconocido, no se descuenta (cargá el stock real primero).`);
+            continue;
+          }
 
-          if (matchedProduct) {
-            const knownStock = (matchedProduct as unknown as Record<string, unknown>).stockQty;
-            if (typeof knownStock !== 'number') {
-              result.logs.push(`   ⚠️ "${matchedProduct.name}": stock desconocido, no se descuenta (cargá el stock real primero).`);
-              continue;
-            }
-            const nextStock = Math.max(0, knownStock - line.units);
-            const nextInStock = nextStock > LOW_STOCK_THRESHOLD;
+          const nextStock = Math.max(0, knownStock - line.units);
+          const nextInStock = nextStock > 0;
 
-            batch.update(adminDb.collection('products').doc(matchedProduct.id.toString()), {
+          // Update Firestore
+          if (adminDb) {
+            await adminDb.collection('products').doc(matchedProduct.id.toString()).update({
               stockQty: nextStock,
               inStock: nextInStock,
             });
-            // Update local copy so subsequent tickets see the reduced stock
-            (matchedProduct as unknown as Record<string, unknown>).stockQty = nextStock;
-            (matchedProduct as unknown as Record<string, unknown>).inStock = nextInStock;
-            batchOps++;
-
-            result.stockReductions.push({
-              productName: matchedProduct.name,
-              sku: matchedProduct.codigoFacturador || matchedProduct.id.toString(),
-              qty: line.units
-            });
-            stockUpdatedCount++;
-            result.logs.push(`   -> Descontado "${matchedProduct.name}" x${line.units}. Nuevo stock: ${nextStock}`);
           } else {
-            result.logs.push(`   ⚠️ No se encontró producto en tienda para ID/Nombre: "${line.product_name}" (Línea omitida).`);
-          }
-        }
-
-        // Add ticket audit record + state update to the same batch
-        newProcessedTicketIds.push(ticket.id);
-        batch.set(adminDb.collection('starpos_imported_sales').doc(ticket.id), { ...ticket, importedAt: new Date().toISOString() });
-        batch.set(adminDb.collection('settings').doc('starpos_sync_state'), { processedTicketIds: newProcessedTicketIds, lastSyncTime: new Date().toISOString() });
-        batchOps += 2;
-
-        // Firestore batches max 500 ops — a single ticket should never hit this
-        if (batchOps > 0) {
-          await batch.commit();
-        }
-      } else {
-        // Client SDK fallback (no batch support in client SDK used here)
-        for (const line of ticket.ticket_lines) {
-          if (!line || typeof line.units !== 'number') { continue; }
-          const matchedProduct = currentProducts.find(p =>
-            p.id.toString() === line.product_id ||
-            p.codigoFacturador === line.product_id ||
-            (!!line.product_name && p.name.toLowerCase() === String(line.product_name).toLowerCase())
-          );
-
-          if (matchedProduct) {
-            const knownStock = (matchedProduct as unknown as Record<string, unknown>).stockQty;
-            if (typeof knownStock !== 'number') {
-              result.logs.push(`   ⚠️ "${matchedProduct.name}": stock desconocido, no se descuenta (cargá el stock real primero).`);
-              continue;
-            }
-            const nextStock = Math.max(0, knownStock - line.units);
-            const nextInStock = nextStock > LOW_STOCK_THRESHOLD;
-
             const productRef = doc(db, 'products', matchedProduct.id.toString());
-            await updateDoc(productRef, { stockQty: nextStock, inStock: nextInStock });
-            (matchedProduct as unknown as Record<string, unknown>).stockQty = nextStock;
-            (matchedProduct as unknown as Record<string, unknown>).inStock = nextInStock;
-
-            result.stockReductions.push({
-              productName: matchedProduct.name,
-              sku: matchedProduct.codigoFacturador || matchedProduct.id.toString(),
-              qty: line.units
+            await updateDoc(productRef, {
+              stockQty: nextStock,
+              inStock: nextInStock,
             });
-            stockUpdatedCount++;
-            result.logs.push(`   -> Descontado "${matchedProduct.name}" x${line.units}. Nuevo stock: ${nextStock}`);
-          } else {
-            result.logs.push(`   ⚠️ No se encontró producto en tienda para ID/Nombre: "${line.product_name}" (Línea omitida).`);
           }
-        }
+          result.stockReductions.push({
+            productName: matchedProduct.name,
+            sku: matchedProduct.codigoFacturador || matchedProduct.id.toString(),
+            qty: line.units
+          });
 
-        newProcessedTicketIds.push(ticket.id);
-        await setDoc(doc(db, 'starpos_imported_sales', ticket.id), { ...ticket, importedAt: new Date().toISOString() });
-        try {
-          await setDoc(stateRef, { processedTicketIds: newProcessedTicketIds, lastSyncTime: new Date().toISOString() });
-        } catch { /* se reintenta en la próxima corrida */ }
+          stockUpdatedCount++;
+          result.logs.push(`   -> Descontado "${matchedProduct.name}" x${line.units}. Nuevo stock: ${nextStock}`);
+        } else {
+          result.logs.push(`   ⚠️ No se encontró producto en tienda para ID/Nombre: "${line.product_name}" (Línea omitida).`);
+        }
       }
+
+      // Add to processed list
+      newProcessedTicketIds.push(ticket.id);
+
+      // Save ticket inside a subcollection for audit visibility
+      if (adminDb) {
+        await adminDb.collection('starpos_imported_sales').doc(ticket.id).set({ ...ticket, importedAt: new Date().toISOString() });
+      } else {
+        await setDoc(doc(db, 'starpos_imported_sales', ticket.id), { ...ticket, importedAt: new Date().toISOString() });
+      }
+
+      // Persistir el estado tras CADA ticket procesado para evitar doble descuento
+      try {
+        if (adminDb) {
+          await adminDb.collection('settings').doc('starpos_sync_state').set({ processedTicketIds: newProcessedTicketIds, lastSyncTime: new Date().toISOString() });
+        } else {
+          await setDoc(stateRef, { processedTicketIds: newProcessedTicketIds, lastSyncTime: new Date().toISOString() });
+        }
+      } catch { /* se reintenta en la próxima corrida */ }
 
       // Mark as transmitted in StarPOS API
       try {
@@ -944,7 +852,7 @@ export async function syncStockFromStarPOS(): Promise<SyncStockResult> {
 
       if (matchedProduct) {
         const nextStock = Math.max(0, Number(qty));
-        const nextInStock = nextStock > LOW_STOCK_THRESHOLD;
+        const nextInStock = nextStock > 0;
 
         if (adminDb) {
           await adminDb.collection('products').doc(matchedProduct.id.toString()).update({
@@ -987,170 +895,12 @@ export async function syncStockFromStarPOS(): Promise<SyncStockResult> {
  *
  * Solo toca el campo `price` — nunca borra fotos, nombre, categoría ni nada más.
  */
-
-// ── Constantes y helpers extraídos de pullPricesFromStarPOS (PERF-04) ──
-
-/** Normaliza un nombre para matching: minúsculas, sin acentos, solo alfanuméricos */
-const normalizeName = (n: string) =>
-  n.toLowerCase().normalize('NFD').replace(/[̀-ͯ]/g, '').replace(/[^a-z0-9\s]/g, '').replace(/\s+/g, ' ').trim();
-
-/** Palabras genéricas que no aportan al matching */
-const GENERIC_WORDS = new Set(['el','la','los','las','de','del','con','sin','en','por','para','un','una','pack','x','al','natural','clasica','clasico','classic','original','ml','1l','500ml','1kg','500g','200g','100g','250g','90g','80g','60g','117g','135g','190g','400g','520g','900ml','170g']);
-
-/** Overrides por defecto — se usan como fallback si Firestore no tiene datos */
-const DEFAULT_OVERRIDES: Record<string, string[]> = {
-  'coca-cola 500ml': ['coca cola 500', 'coca-cola 500'],
-  'monster energy 473ml': ['monster energy', 'monster 473'],
-  'gatorade naranja 500ml': ['gatorade naranja'],
-  'leche la serenísima 1l': ['leche entera serenisima', 'leche serenisima 1l', 'la serenisima leche 1'],
-  'palitos de la selva 60g': ['palitos de la selva'],
-  'facturas surtidas x4': ['facturas surtidas', 'facturas x4', 'factura surtida'],
-  'medialunas x6': ['medialunas x6', 'medialuna x6', 'medialunas x 6'],
-  'shampoo elvive 400ml': ['elvive 400', 'shampoo elvive', 'loreal elvive 400'],
-  'jabón dove 90g': ['jabon dove', 'dove 90'],
-  'detergente magistral 750ml': ['magistral 750', 'detergente magistral'],
-  'lavandina ayudín 1l': ['ayudin 1', 'lavandina ayudin'],
-  'vino trapiche malbec 750ml': ['trapiche malbec', 'trapiche 750', 'trapiche malbec 750', 'vino trapiche malbec'],
-  'pedigree adultos 1kg': ['pedigree adulto', 'pedigree 1kg', 'pedigree 1 kg'],
-  'pizza tia maruca 350g': ['tia maruca', 'pizza tia maruca', 'tia maruca pizza', 'pizza tia maruca 350'],
-  'cerveza patagonia amber 410ml': ['patagonia amber', 'patagonia 410'],
-  'cerveza corona porrón 330ml': ['corona 330', 'corona porron', 'corona 330ml', 'corona porron 330'],
-  'pote helado frigor ddl 1l': ['frigor ddl', 'helado frigor', 'frigor dulce'],
-  'campari 750ml': ['campari 750', 'campari'],
-  'vodka smirnoff 700ml': ['smirnoff 700', 'vodka smirnoff'],
-  'lays classic 90g': ['lays clasicas 90', 'lays original 90', 'lays 90'],
-  'cheetos flamin hot 80g': ['cheetos flamin', 'cheetos picant'],
-  'oreo original 117g': ['oreo 117g', 'oreo original 117', 'galletitas oreo 117'],
-  'criollitas 200g': ['criollitas 200', 'criollitas clasica 200'],
-  'fideos matarazzo 500g': ['matarazzo 500', 'fideos matarazzo 500'],
-  'mayonesa hellmanns 250g': ['hellmanns clasica 250', 'hellmanns mayonesa 250g'],
-  'jamón cocido x100g': ['jamon cocido 100', 'jamon cocido natural'],
-  'salame maggioni x100g': ['maggioni', 'salame maggioni'],
-  'queso pategrás x100g': ['pategras 100', 'pategras x 100', 'queso pategras x100'],
-  'queso cremoso x100g': ['queso cremoso 100', 'cremoso 100'],
-  'puré de tomates arcor 520g': ['pure tomate arcor 520', 'tomates arcor 520'],
-  'atún al natural gomes da costa 170g': ['gomes da costa 170', 'atun gomes 170'],
-  'yogur ser frutilla 190g': ['yogur ser frutilla', 'ser frutilla 190'],
-  'yerba mate taragüi 500g': ['taragui 500', 'yerba taragui 500'],
-  'toblerone 100g': ['toblerone'],
-  'mentitas peppermint': ['mentitas felfort', 'drf mentitas menta'],
-  'harina de trigo blancaflor 1kg': ['harina blancaflor'],
-  'paleta ahumada x100g': ['paleta ahumada'],
-  'aceite de girasol natura 900ml': ['aceite natura 900', 'natura 900'],
-  'azúcar ledesma clásica 1kg': ['azucar ledesma', 'ledesma 1kg'],
-  'bebida energizante monster energy 473ml': ['monster energy', 'monster 473'],
-  'bebida gatorade naranja 500ml': ['gatorade naranja', 'gatorade 500'],
-  'vodka smirnoff triple destilado red 700ml': ['smirnoff 700', 'vodka smirnoff'],
-  'papas fritas lays clásicas 90g': ['lays clasicas 90', 'lays original 90', 'lays 90'],
-  'cheetos horneados queso 80g': ['cheetos horneados', 'cheetos queso 80'],
-  'coca-cola original sabor único 2.25l': ['coca cola 2.25', 'coca cola 2 25', 'coca-cola 2.25', 'coca cola 225'],
-  'cerveza quilmes clásica 1l': ['quilmes clasica 1', 'quilmes 1 litro', 'quilmes 1l', 'quilmes clasica 1000'],
-  'cerveza corona extra 710ml': ['corona extra 710', 'corona 710'],
-  'cerveza imperial golden 1l': ['imperial golden 1', 'imperial 1l', 'imperial golden 1000', 'imperial 1 litro'],
-  'cerveza stella artois 975ml': ['stella artois 975', 'stella 975'],
-  'aperitivo campari milano bitter 750ml': ['campari 750', 'campari milano', 'campari bitter'],
-  'aperitivo gancia americano 950ml': ['gancia americano', 'gancia 950'],
-  'gaseosa fanta naranja 1.5l': ['fanta naranja 1.5', 'fanta 1.5', 'fanta naranja 1500'],
-  'alfajor guaymallén negro ddl': ['guaymalien', 'guaymallen negro', 'guaymallen ddl'],
-  'alfajor milka oreo triple 135g': ['milka oreo triple', 'milka oreo 135'],
-  'doritos mega queso nacho 150g': ['doritos mega queso', 'doritos nacho 150', 'doritos mega 150'],
-  'cubanito mantecol': ['cubanito mantecol', 'mantecol cubanito'],
-  'arcor cracker 112g': ['arcor cracker 112', 'cracker arcor 112'],
-  'bastoncitos krachitos 60g': ['bastoncitos krachitos 60'],
-  'lenguetazo manzana acida': ['lenguetazo manzana'],
-  'lenguetazo tutti-frutti': ['lenguetazo tutti', 'lenguetazo tutti frutti'],
-  'plin x 2 cremoso': ['plin cremoso', 'plin x 2'],
-  'bananita mogul': ['bananita mogul', 'mogul bananita', 'mogul bananita x'],
-  'chocolate cofler block maní 110g': ['cofler block mani', 'cofler block 110', 'cofler mani'],
-  'queso cremoso tremblay x 500g': ['tremblay 500', 'tremblay cremoso', 'queso tremblay'],
-  'carbon x 5kg': ['carbon 5', 'carbon x 5', 'carbon vegetal 5'],
-  'hielo x 1kg': ['hielo 1', 'hielo x 1', 'bolsa hielo'],
-  'tic tac': ['tic tac'],
-  'pan comun primavera': ['pan primavera', 'primavera comun'],
-  'pan especial artesano': ['pan artesano', 'artesano especial'],
-  'arcor naranja durazno': ['arcor naranja durazno', 'jugo arcor naranja'],
-  'la saltena': ['la saltena', 'saltena'],
-  'esp. prepizza': ['prepizza', 'pre pizza'],
-  'maizena': ['maizena'],
-  'speed': ['speed'],
-  'poett': ['poett'],
-  'tulipan': ['tulipan'],
-};
-
-/** Blocklist por defecto — productos que nunca matchean por fuzzy */
-const DEFAULT_BLOCKLIST = [
-  'jamón cocido x100g', 'salame maggioni x100g', 'queso pategrás x100g',
-  'queso cremoso x100g', 'leche la serenísima 1l', 'cheetos flamin hot 80g',
-  'mayonesa hellmanns 250g', 'puré de tomates arcor 520g',
-  'atún al natural gomes da costa 170g', 'vino trapiche malbec 750ml',
-  'shampoo elvive 400ml', 'detergente magistral 750ml', 'oreo original 117g',
-  'yogur ser frutilla 190g', 'yerba mate taragüi 500g', 'lays classic 90g',
-  'pizza tia maruca 350g', 'cerveza corona porrón 330ml',
-  'cerveza quilmes clásica 1l', 'cerveza corona extra 710ml',
-  'cerveza imperial golden 1l', 'cerveza stella artois 975ml',
-  'coca-cola original sabor único 2.25l', 'gaseosa fanta naranja 1.5l',
-  'bebida energizante monster energy 473ml', 'bebida gatorade naranja 500ml',
-  'vodka smirnoff triple destilado red 700ml', 'papas fritas lays clásicas 90g',
-  'cheetos horneados queso 80g', 'aperitivo campari milano bitter 750ml',
-  'aperitivo gancia americano 950ml', 'shampoo sedal sachet',
-  'bubbaloo rosa', 'noquis la salteña',
-];
-
-/**
- * PERF-05: Carga overrides y blocklist desde Firestore, con fallback a defaults hardcoded.
- * Cachea en memoria por 5 minutos para no leer Firestore en cada sync.
- */
-let _matchConfigCache: { overrides: Record<string, string[]>; blocklist: Set<string>; ts: number } | null = null;
-const MATCH_CONFIG_TTL = 5 * 60 * 1000; // 5 min
-
-async function loadMatchingConfig(): Promise<{ overrides: Record<string, string[]>; blocklist: Set<string> }> {
-  if (_matchConfigCache && Date.now() - _matchConfigCache.ts < MATCH_CONFIG_TTL) {
-    return { overrides: _matchConfigCache.overrides, blocklist: _matchConfigCache.blocklist };
-  }
-
-  let overrides = { ...DEFAULT_OVERRIDES };
-  let blocklistArr = [...DEFAULT_BLOCKLIST];
-
-  try {
-    const adminDb = getAdminDb();
-    if (adminDb) {
-      // Leer overrides de Firestore (collection priceOverrides, cada doc: { patterns: string[] })
-      const overSnap = await adminDb.collection('priceOverrides').get();
-      if (!overSnap.empty) {
-        overrides = {};
-        overSnap.docs.forEach(d => {
-          const data = d.data();
-          if (Array.isArray(data.patterns)) {
-            overrides[d.id] = data.patterns;
-          }
-        });
-      }
-
-      // Leer blocklist de Firestore (doc priceConfig/blocklist: { items: string[] })
-      const blSnap = await adminDb.collection('priceConfig').doc('blocklist').get();
-      if (blSnap.exists) {
-        const data = blSnap.data();
-        if (data && Array.isArray(data.items)) {
-          blocklistArr = data.items;
-        }
-      }
-    }
-  } catch (e: any) {
-    logger.warn({ err: e.message }, 'No se pudo cargar config de matching de Firestore, usando defaults');
-  }
-
-  const result = { overrides, blocklist: new Set(blocklistArr) };
-  _matchConfigCache = { ...result, ts: Date.now() };
-  return result;
-}
-
 export interface SyncPricesResult {
   success: boolean;
   totalFetched: number;
   updatedCount: number;
   skippedCount: number;
   logs: string[];
-  noMatchNames?: string[];
 }
 
 export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
@@ -1207,7 +957,7 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
     // Construir lista StarPOS con nombre y precio.
     // La API de StarPOS SÍ expone barcodes en el campo "code" de cada producto.
     // Matching: 1° barcode (exacto), 2° override manual, 3° fuzzy name.
-    // normalizeName y GENERIC_WORDS extraídos a nivel de módulo (PERF-04)
+    const normalizeName = (n: string) => n.toLowerCase().replace(/[^a-záéíóúñü0-9\s]/g, '').replace(/\s+/g, ' ').trim();
 
     const starposItems: { name: string; normName: string; price: number; inStock: boolean }[] = [];
     // Mapa barcode→{precio,nombre,inStock} para matching exacto por código de barras
@@ -1311,7 +1061,7 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
       'branca': ['branca'],
     };
 
-    // GENERIC_WORDS extraído a nivel de módulo (PERF-04)
+    const generic = new Set(['el','la','los','las','de','del','con','sin','en','por','para','un','una','pack','x','al','natural','clasica','clasico','classic','original','ml','1l','500ml','1kg','500g','200g','100g','250g','90g','80g','60g','117g','135g','190g','400g','520g','900ml','170g']);
 
     // Pre-computar datos de StarPOS para evitar re-calcular en cada iteración
     const exactMap = new Map<string, { price: number; name: string; inStock: boolean }>();
@@ -1323,7 +1073,7 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
     for (let i = 0; i < starposItems.length; i++) {
       const sp = starposItems[i];
       exactMap.set(sp.normName, { price: sp.price, name: sp.name, inStock: sp.inStock });
-      const spWords = sp.normName.split(' ').filter(w => w.length > 1 && !GENERIC_WORDS.has(w));
+      const spWords = sp.normName.split(' ').filter(w => w.length > 1 && !generic.has(w));
       precomputedSpWords.push(spWords);
       // Indexar cada palabra
       for (const w of spWords) {
@@ -1342,7 +1092,7 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
       const exact = exactMap.get(norm);
       if (exact) return { price: exact.price, spName: exact.name, inStock: exact.inStock };
 
-      const appWords = norm.split(' ').filter(w => w.length > 1 && !GENERIC_WORDS.has(w));
+      const appWords = norm.split(' ').filter(w => w.length > 1 && !generic.has(w));
       if (appWords.length === 0) return null;
 
       // 2. Recopilar candidatos usando el índice invertido (solo items que comparten al menos una palabra)
@@ -1365,10 +1115,8 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
 
       // Si no hay candidatos por índice, contención como fallback (más rápido que full scan)
       if (candidateSet.size === 0) {
-        // Contención como fallback — pero solo si el nombre tiene al menos 2 palabras
-        // para evitar matches espurios como "pan" → "PAN LACTAL" o "sal" → "SALSA"
-        const wordCount = norm.split(/\s+/).filter(w => w.length > 1).length;
-        if (norm.length <= 15 && wordCount >= 2) {
+        // Intentar contención solo si el nombre es corto
+        if (norm.length <= 15) {
           const contained = starposItems.find(sp => sp.normName.includes(norm) || norm.includes(sp.normName));
           if (contained) return { price: contained.price, spName: contained.name, inStock: contained.inStock };
         }
@@ -1461,49 +1209,122 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
           }
           if (sizedBest && sizedCount === 1) return sizedBest;
         }
-
-        // 5. Desambiguar por cantidad de palabras de la app presentes en el match
-        // El candidato con más palabras de la app es más probable que sea correcto
-        let bestWordOverlap = 0;
-        let overlapBest: { price: number; spName: string; inStock: boolean } | null = null;
-        let overlapCount = 0;
-        for (const idx of candidateSet) {
-          const sp = starposItems[idx];
-          let score = 0;
-          for (const w of appWords) {
-            if (sp.normName.includes(w)) score += w.length;
-            const aliases = brandAliases[w];
-            if (aliases) {
-              for (const alias of aliases) {
-                if (sp.normName.includes(alias)) { score += alias.length; break; }
-              }
-            }
-          }
-          for (const sw of precomputedSpWords[idx]) {
-            if (norm.includes(sw)) score += sw.length;
-          }
-          if (score !== bestScore) continue;
-
-          // Contar cuántas palabras de la app están en este candidato
-          const spNorm = sp.normName;
-          const wordOverlap = appWords.filter(w => spNorm.includes(w)).length;
-          if (wordOverlap > bestWordOverlap) {
-            bestWordOverlap = wordOverlap;
-            overlapBest = { price: sp.price, spName: sp.name, inStock: sp.inStock };
-            overlapCount = 1;
-          } else if (wordOverlap === bestWordOverlap) {
-            overlapCount++;
-          }
-        }
-        if (overlapBest && overlapCount === 1 && bestWordOverlap >= 2) return overlapBest;
       }
 
       return null;
     }
 
-    // PERF-05: Cargar overrides y blocklist desde Firestore (con fallback a defaults)
-    const { overrides: manualOverrides, blocklist: fuzzyBlocklist } = await loadMatchingConfig();
-    result.logs.push(`📋 Config de matching: ${Object.keys(manualOverrides).length} overrides, ${fuzzyBlocklist.size} blockeados.`);
+    // Mapeo manual para productos que el fuzzy matching no puede resolver
+    // (nombres demasiado diferentes entre app y StarPOS)
+    const manualOverrides: Record<string, string[]> = {
+      // app name (lowercase) → posibles nombres StarPOS (lowercase substrings a buscar)
+      'coca-cola 500ml': ['coca cola 500', 'coca-cola 500'],
+      'monster energy 473ml': ['monster energy', 'monster 473'],
+      'gatorade naranja 500ml': ['gatorade naranja'],
+      'leche la serenísima 1l': ['leche entera serenisima', 'leche serenisima 1l', 'la serenisima leche 1'],
+      'palitos de la selva 60g': ['palitos de la selva'],
+      'facturas surtidas x4': ['facturas surtidas', 'facturas x4', 'factura surtida'],
+      'medialunas x6': ['medialunas x6', 'medialuna x6', 'medialunas x 6'],
+      'shampoo elvive 400ml': ['elvive 400', 'shampoo elvive', 'loreal elvive 400'],
+      'jabón dove 90g': ['jabon dove', 'dove 90'],
+      'detergente magistral 750ml': ['magistral 750', 'detergente magistral'],
+      'lavandina ayudín 1l': ['ayudin 1', 'lavandina ayudin'],
+      'vino trapiche malbec 750ml': ['trapiche malbec', 'trapiche 750', 'trapiche malbec 750', 'vino trapiche malbec'],
+      'pedigree adultos 1kg': ['pedigree adulto', 'pedigree 1kg', 'pedigree 1 kg'],
+      'pizza tia maruca 350g': ['tia maruca', 'pizza tia maruca', 'tia maruca pizza', 'pizza tia maruca 350'],
+      'cerveza patagonia amber 410ml': ['patagonia amber', 'patagonia 410'],
+      'cerveza corona porrón 330ml': ['corona 330', 'corona porron', 'corona 330ml', 'corona porron 330'],
+      'pote helado frigor ddl 1l': ['frigor ddl', 'helado frigor', 'frigor dulce'],
+      'campari 750ml': ['campari 750', 'campari'],
+      'vodka smirnoff 700ml': ['smirnoff 700', 'vodka smirnoff'],
+      // Fixes para matches incorrectos:
+      'lays classic 90g': ['lays clasicas 90', 'lays original 90', 'lays 90'],
+      'cheetos flamin hot 80g': ['cheetos flamin', 'cheetos picant'],
+      'oreo original 117g': ['oreo 117g', 'oreo original 117', 'galletitas oreo 117'],
+      'criollitas 200g': ['criollitas 200', 'criollitas clasica 200'],
+      'fideos matarazzo 500g': ['matarazzo 500', 'fideos matarazzo 500'],
+      'mayonesa hellmanns 250g': ['hellmanns clasica 250', 'hellmanns mayonesa 250g'],
+      'jamón cocido x100g': ['jamon cocido 100', 'jamon cocido natural'],
+      'salame maggioni x100g': ['maggioni', 'salame maggioni'],
+      'queso pategrás x100g': ['pategras 100', 'pategras x 100', 'queso pategras x100'],
+      'queso cremoso x100g': ['queso cremoso 100', 'cremoso 100'],
+      'puré de tomates arcor 520g': ['pure tomate arcor 520', 'tomates arcor 520'],
+      'atún al natural gomes da costa 170g': ['gomes da costa 170', 'atun gomes 170'],
+      'yogur ser frutilla 190g': ['yogur ser frutilla', 'ser frutilla 190'],
+      'yerba mate taragüi 500g': ['taragui 500', 'yerba taragui 500'],
+      'toblerone 100g': ['toblerone'],
+      'mentitas peppermint': ['mentitas felfort', 'drf mentitas menta'],
+      'harina de trigo blancaflor 1kg': ['harina blancaflor'],
+      'paleta ahumada x100g': ['paleta ahumada'],
+      'aceite de girasol natura 900ml': ['aceite natura 900', 'natura 900'],
+      'azúcar ledesma clásica 1kg': ['azucar ledesma', 'ledesma 1kg'],
+      // Variantes con nombres largos en Firestore
+      'bebida energizante monster energy 473ml': ['monster energy', 'monster 473'],
+      'bebida gatorade naranja 500ml': ['gatorade naranja', 'gatorade 500'],
+      'vodka smirnoff triple destilado red 700ml': ['smirnoff 700', 'vodka smirnoff'],
+      'papas fritas lays clásicas 90g': ['lays clasicas 90', 'lays original 90', 'lays 90'],
+      'cheetos horneados queso 80g': ['cheetos horneados', 'cheetos queso 80'],
+      'coca-cola original sabor único 2.25l': ['coca cola 2.25', 'coca cola 2 25', 'coca-cola 2.25', 'coca cola 225'],
+      'cerveza quilmes clásica 1l': ['quilmes clasica 1', 'quilmes 1 litro', 'quilmes 1l', 'quilmes clasica 1000'],
+      'cerveza corona extra 710ml': ['corona extra 710', 'corona 710'],
+      'cerveza imperial golden 1l': ['imperial golden 1', 'imperial 1l', 'imperial golden 1000', 'imperial 1 litro'],
+      'cerveza stella artois 975ml': ['stella artois 975', 'stella 975'],
+      'aperitivo campari milano bitter 750ml': ['campari 750', 'campari milano', 'campari bitter'],
+      'aperitivo gancia americano 950ml': ['gancia americano', 'gancia 950'],
+      'gaseosa fanta naranja 1.5l': ['fanta naranja 1.5', 'fanta 1.5', 'fanta naranja 1500'],
+      'alfajor guaymallén negro ddl': ['guaymalien', 'guaymallen negro', 'guaymallen ddl'],
+      'alfajor milka oreo triple 135g': ['milka oreo triple', 'milka oreo 135'],
+      'doritos mega queso nacho 150g': ['doritos mega queso', 'doritos nacho 150', 'doritos mega 150'],
+      'cubanito mantecol': ['cubanito mantecol', 'mantecol cubanito'],
+      'arcor cracker 112g': ['arcor cracker 112', 'cracker arcor 112'],
+      'bastoncitos krachitos 60g': ['bastoncitos krachitos 60'],
+      'lenguetazo manzana acida': ['lenguetazo manzana'],
+      'lenguetazo tutti-frutti': ['lenguetazo tutti', 'lenguetazo tutti frutti'],
+      // 'noquis la salteña' — bloqueado: StarPOS tiene precio $1600 (sospechoso, bajó de $4200)
+      'plin x 2 cremoso': ['plin cremoso', 'plin x 2'],
+      // 'shampoo sedal sachet' — bloqueado: StarPOS matcheó SEDAL X340ML (producto incorrecto, sachet ≠ botella)
+      'bananita mogul': ['bananita mogul', 'mogul bananita'],
+      // 'bubbaloo rosa' — bloqueado: StarPOS matcheó BUBBALOO HUELLITAS FRUTILLA (producto incorrecto)
+    };
+
+    // Productos que NUNCA deben matchear por fuzzy (el fuzzy los confunde con otro producto).
+    // Si no hay override manual que matchee, devuelve null → sin match (mejor que un match malo).
+    const fuzzyBlocklist = new Set([
+      'jamón cocido x100g',
+      'salame maggioni x100g',
+      'queso pategrás x100g',
+      'queso cremoso x100g',
+      'leche la serenísima 1l',
+      'cheetos flamin hot 80g',
+      'mayonesa hellmanns 250g',
+      'puré de tomates arcor 520g',
+      'atún al natural gomes da costa 170g',
+      'vino trapiche malbec 750ml',
+      'shampoo elvive 400ml',
+      'detergente magistral 750ml',
+      'oreo original 117g',
+      'yogur ser frutilla 190g',
+      'yerba mate taragüi 500g',
+      'lays classic 90g',
+      'pizza tia maruca 350g',
+      'cerveza corona porrón 330ml',
+      'cerveza quilmes clásica 1l',
+      'cerveza corona extra 710ml',
+      'cerveza imperial golden 1l',
+      'cerveza stella artois 975ml',
+      'coca-cola original sabor único 2.25l',
+      'gaseosa fanta naranja 1.5l',
+      'bebida energizante monster energy 473ml',
+      'bebida gatorade naranja 500ml',
+      'vodka smirnoff triple destilado red 700ml',
+      'papas fritas lays clásicas 90g',
+      'cheetos horneados queso 80g',
+      'aperitivo campari milano bitter 750ml',
+      'aperitivo gancia americano 950ml',
+      'shampoo sedal sachet',
+      'bubbaloo rosa',
+      'noquis la salteña',
+    ]);
 
     // Función de override: busca en starposItems usando los patterns del mapeo manual
     function findManualOverride(appName: string): { price: number; spName: string; inStock: boolean } | null {
@@ -1519,7 +1340,7 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
 
     // Leer productos de Firestore con admin SDK (no consume cuota del cliente).
     // Fallback a DEFAULT_PRODUCTS si admin no está disponible.
-    let firestoreProducts: { id: string; name: string; price: number; inStock?: boolean; barcode?: string; cat?: string; name_lower?: string }[] = [];
+    let firestoreProducts: { id: string; name: string; price: number; inStock?: boolean; barcode?: string }[] = [];
 
     if (adminDb) {
       try {
@@ -1532,9 +1353,7 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
               name: data.name as string || '',
               price: typeof data.price === 'number' ? data.price : 0,
               inStock: data.inStock !== false,
-              barcode: typeof data.barcode === 'string' ? data.barcode.trim() : undefined,
-              cat: typeof data.cat === 'string' ? data.cat : undefined,
-              name_lower: typeof data.name_lower === 'string' ? data.name_lower : undefined
+              barcode: typeof data.barcode === 'string' ? data.barcode.trim() : undefined
             };
           })
           .filter(p => p.name); // solo los que tienen nombre
@@ -1597,7 +1416,7 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
       }
       if (!match) {
         noMatchCount++;
-        noMatchNames.push(fp.name);
+        if (noMatchNames.length < 25) noMatchNames.push(fp.name);
         continue;
       }
       const starposPrice = match.price;
@@ -1608,17 +1427,9 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
         // Aunque el precio sea igual, si el stock cambió hay que actualizar
         const currentInStock = fp.inStock !== false; // default true si no existe
         if (match.inStock !== currentInStock) {
-          const stockData: Record<string, any> = { inStock: match.inStock };
-          if (!fp.cat) {
-            const guessed = guessCategoryFromName(fp.name);
-            if (guessed) stockData.cat = guessed;
-          }
-          if (!fp.name_lower && fp.name) {
-            stockData.name_lower = fp.name.trim().toLowerCase();
-          }
           const stockUpdateFn = adminDb
-            ? adminDb.collection('products').doc(fp.id).set(stockData, { merge: true })
-            : setDoc(doc(db, 'products', fp.id), stockData, { merge: true });
+            ? adminDb.collection('products').doc(fp.id).set({ inStock: match.inStock }, { merge: true })
+            : setDoc(doc(db, 'products', fp.id), { inStock: match.inStock }, { merge: true });
           updatePromises.push(stockUpdateFn.then(() => {}));
           stockChangedCount++;
           if (stockChangedCount <= 10) {
@@ -1629,42 +1440,21 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
         continue;
       }
 
-      // PROTECCIÓN: En Argentina los precios generalmente suben. Si StarPOS tiene un precio
-      // MUCHO menor al actual (>10%), probablemente el match es incorrecto.
-      // Pequeñas bajas (≤10%) se permiten (pueden ser promociones o correcciones).
-      const dropPercent = fp.price > 0 ? ((fp.price - starposPrice) / fp.price) * 100 : 0;
-      if (starposPrice < fp.price && fp.price > 0 && dropPercent > 10) {
+      // PROTECCIÓN: En Argentina los precios solo suben. Si StarPOS tiene un precio
+      // menor al actual, probablemente el match es incorrecto (otro producto).
+      // Skipear y loggear para revisión manual.
+      if (starposPrice < fp.price && fp.price > 0) {
         skippedCount++;
         if (priceDropNames.length < 15) {
           priceDropNames.push(`${fp.name}: $${fp.price} → $${starposPrice} (SP: ${match.spName})`);
         }
         priceDropCount++;
-        // DATA-03: flaggear para revisión admin en vez de solo skipear
-        if (adminDb) {
-          const flagData = {
-            productId: fp.id, productName: fp.name,
-            currentPrice: fp.price, starposPrice,
-            starposName: match.spName, dropPercent: Math.round(dropPercent),
-            flaggedAt: new Date().toISOString(), reviewed: false,
-          };
-          updatePromises.push(
-            adminDb.collection('priceFlagged').doc(fp.id).set(flagData, { merge: true }).then(() => {})
-          );
-        }
         continue;
       }
 
       // Actualizar precio y stock desde StarPOS — no tocar nada más (fotos, nombre, categoría)
-      // Si no tiene categoría, intentar asignarla automáticamente por nombre
       // Usar set+merge en vez de update para no fallar si el doc no existe aún
-      const updateData: Record<string, any> = { price: starposPrice, inStock: match.inStock };
-      if (!fp.cat) {
-        const guessed = guessCategoryFromName(fp.name);
-        if (guessed) updateData.cat = guessed;
-      }
-      if (!fp.name_lower && fp.name) {
-        updateData.name_lower = fp.name.trim().toLowerCase();
-      }
+      const updateData: { price: number; inStock: boolean } = { price: starposPrice, inStock: match.inStock };
       const updateFn = adminDb
         ? adminDb.collection('products').doc(fp.id).set(updateData, { merge: true })
         : setDoc(doc(db, 'products', fp.id), updateData, { merge: true });
@@ -1701,7 +1491,6 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
       result.logs.push(`📦 Stock actualizado en ${stockChangedCount} productos (precio igual pero stock cambió).`);
     }
     result.logs.push(`🎉 Sincronización finalizada. Precios actualizados: ${updatedCount}, precio igual: ${samePrice}, stock cambió: ${stockChangedCount}, sin match: ${noMatchCount}, precio bajó (bloqueados): ${priceDropCount}, match por barcode: ${barcodeMatchCount}.`);
-    result.noMatchNames = noMatchNames;
   } catch (error: unknown) {
     result.success = false;
     const msg = error instanceof Error ? error.message : String(error);
@@ -1718,7 +1507,7 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
  * por nombre y si el producto StarPOS tiene EAN en "code", lo escribe.
  * One-shot para bootstrappear barcodes; después los syncs matchean por barcode.
  */
-export async function populateBarcodes(externalProducts?: StarPOSProduct[]): Promise<{ success: boolean; populated: number; alreadyHad: number; noMatch: number; logs: string[] }> {
+export async function populateBarcodes(): Promise<{ success: boolean; populated: number; alreadyHad: number; noMatch: number; logs: string[] }> {
   const logs: string[] = [];
   const adminDb = getAdminDb();
 
@@ -1727,35 +1516,29 @@ export async function populateBarcodes(externalProducts?: StarPOSProduct[]): Pro
   }
 
   try {
+    logs.push('Autenticando con StarPOS...');
+    await authenticateStarPOS();
+
+    logs.push('Consultando productos StarPOS...');
+    const response = await authenticatedFetch('/v1/Products', {}, 180000);
+    if (!response.ok) throw new Error(`StarPOS Products failed: ${response.status}`);
+
+    const data = await safeJsonParse<unknown>(response, '/v1/Products');
     let starposProducts: StarPOSProduct[];
-
-    if (externalProducts && externalProducts.length > 0) {
-      starposProducts = externalProducts;
-      logs.push(`Usando ${starposProducts.length} productos recibidos externamente.`);
+    if (Array.isArray(data)) {
+      starposProducts = data;
+    } else if (data && typeof data === 'object') {
+      const d = data as Record<string, unknown>;
+      const candidates = d.Products || d.products || d.payload || d.data || d.items;
+      starposProducts = Array.isArray(candidates) ? candidates as StarPOSProduct[] : [];
     } else {
-      logs.push('Autenticando con StarPOS...');
-      await authenticateStarPOS();
-
-      logs.push('Consultando productos StarPOS...');
-      const response = await authenticatedFetch('/v1/Products', {}, 180000);
-      if (!response.ok) throw new Error(`StarPOS Products failed: ${response.status}`);
-
-      const data = await safeJsonParse<unknown>(response, '/v1/Products');
-      if (Array.isArray(data)) {
-        starposProducts = data;
-      } else if (data && typeof data === 'object') {
-        const d = data as Record<string, unknown>;
-        const candidates = d.Products || d.products || d.payload || d.data || d.items;
-        starposProducts = Array.isArray(candidates) ? candidates as StarPOSProduct[] : [];
-      } else {
-        starposProducts = [];
-      }
+      starposProducts = [];
     }
 
     logs.push(`${starposProducts.length} productos StarPOS recibidos.`);
 
     // Construir mapa nombre normalizado → barcode (solo con precio válido)
-    // normalizeName extraído a nivel de módulo (PERF-04)
+    const normalizeName = (n: string) => n.toLowerCase().replace(/[^a-záéíóúñü0-9\s]/g, '').replace(/\s+/g, ' ').trim();
     const spNormToBarcode = new Map<string, string>();
 
     for (const sp of starposProducts) {
