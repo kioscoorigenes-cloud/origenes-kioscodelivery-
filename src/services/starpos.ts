@@ -57,6 +57,10 @@ export function guessCategoryFromName(name: string): string {
   return ''; // no se pudo determinar
 }
 
+// Umbral mínimo de stock: si quedan esta cantidad o menos, la app muestra "sin stock".
+// Así Germán tiene margen antes de que realmente se agote.
+const LOW_STOCK_THRESHOLD = 3;
+
 // Types for StarPOS API Entities
 export interface StarPOSTax {
   id: string;
@@ -746,7 +750,7 @@ export async function syncSalesAndDiscountStock(firestoreProducts: Product[]): P
               continue;
             }
             const nextStock = Math.max(0, knownStock - line.units);
-            const nextInStock = nextStock > 0;
+            const nextInStock = nextStock > LOW_STOCK_THRESHOLD;
 
             batch.update(adminDb.collection('products').doc(matchedProduct.id.toString()), {
               stockQty: nextStock,
@@ -796,7 +800,7 @@ export async function syncSalesAndDiscountStock(firestoreProducts: Product[]): P
               continue;
             }
             const nextStock = Math.max(0, knownStock - line.units);
-            const nextInStock = nextStock > 0;
+            const nextInStock = nextStock > LOW_STOCK_THRESHOLD;
 
             const productRef = doc(db, 'products', matchedProduct.id.toString());
             await updateDoc(productRef, { stockQty: nextStock, inStock: nextInStock });
@@ -940,7 +944,7 @@ export async function syncStockFromStarPOS(): Promise<SyncStockResult> {
 
       if (matchedProduct) {
         const nextStock = Math.max(0, Number(qty));
-        const nextInStock = nextStock > 0;
+        const nextInStock = nextStock > LOW_STOCK_THRESHOLD;
 
         if (adminDb) {
           await adminDb.collection('products').doc(matchedProduct.id.toString()).update({
