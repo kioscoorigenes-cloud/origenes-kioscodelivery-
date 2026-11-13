@@ -4,7 +4,7 @@ import { useAdmin } from './hooks/useAdmin';
 import { Storefront } from './components/Storefront';
 import Onboarding from './components/Onboarding';
 import { Product, Order, PromoBanner, DeliveryZone, Combo } from './types';
-import { DEFAULT_PRODUCTS, getFallbackStoreImage } from './data';
+import { DEFAULT_PRODUCTS, HIDDEN_CATS, getFallbackStoreImage } from './data';
 import { playChime } from './utils/audio';
 import { authedFetch } from './utils/authedFetch';
 import { collection, onSnapshot, doc, setDoc, deleteDoc, addDoc } from 'firebase/firestore';
@@ -304,7 +304,8 @@ export default function App() {
       const snapshot = await getDocs(q);
       const fetchedProds: Product[] = [];
       snapshot.forEach(doc => {
-        fetchedProds.push(doc.data() as Product);
+        const p = doc.data() as Product;
+        if (!HIDDEN_CATS.has(p.cat)) fetchedProds.push(p);
       });
 
       if (reset && currentCatVal === 'all' && fetchedProds.length === 0) {

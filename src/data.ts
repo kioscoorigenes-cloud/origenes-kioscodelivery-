@@ -1,5 +1,8 @@
 import { Product, Category, Combo, Promo } from "./types";
 
+// Categorías ocultas en la app (Google Play policy — tobacco/nicotine)
+export const HIDDEN_CATS = new Set(['cigarrillos']);
+
 export const CATS: Category[] = [
   { id: "kiosco", name: "🍫 Kiosco" },
   { id: "almacen", name: "🥫 Almacén" },
@@ -73,7 +76,6 @@ export const CATEGORY_RULES: [string, RegExp][] = [ ['cigarrillos', /TABACO|CAME
   // GASEOSAS
   {
     id: 1,
-    barcode: "7790895000782",
     cat: "gaseosas",
     name: "Coca-Cola 500ml",
     brand: "Coca-Cola",
@@ -85,10 +87,10 @@ export const CATEGORY_RULES: [string, RegExp][] = [ ['cigarrillos', /TABACO|CAME
     inStock: true,
     image:
       "https://images.unsplash.com/photo-1622483767028-3f66f32aef97?q=80&w=600&auto=format&fit=crop",
+    barcode: "7790895000782",
   },
   {
     id: 2,
-    barcode: "7791813969587",
     cat: "gaseosas",
     name: "Pepsi 1.5L",
     brand: "Pepsi",
@@ -100,10 +102,10 @@ export const CATEGORY_RULES: [string, RegExp][] = [ ['cigarrillos', /TABACO|CAME
     inStock: true,
     image:
       "https://images.unsplash.com/photo-1629203851122-3726ecdf080e?q=80&w=600&auto=format&fit=crop",
+    barcode: "7791813969587",
   },
   {
     id: 3,
-    barcode: "7790895000829",
     cat: "gaseosas",
     name: "Sprite 500ml",
     brand: "Sprite",
@@ -114,10 +116,10 @@ export const CATEGORY_RULES: [string, RegExp][] = [ ['cigarrillos', /TABACO|CAME
     neww: false,
     inStock: true,
     image: "",
+    barcode: "7790895000829",
   },
   {
     id: 7,
-    barcode: "7791813444381",
     cat: "gaseosas",
     name: "Seven Up 500ml",
     brand: "7Up",
@@ -128,12 +130,12 @@ export const CATEGORY_RULES: [string, RegExp][] = [ ['cigarrillos', /TABACO|CAME
     neww: false,
     inStock: true,
     image: "",
+    barcode: "7791813444381",
   },
 
   // AGUAS
   {
     id: 4,
-    barcode: "7799155000197",
     cat: "aguas",
     name: "Agua Villavicencio 1.5L",
     brand: "Villavicencio",
@@ -145,12 +147,12 @@ export const CATEGORY_RULES: [string, RegExp][] = [ ['cigarrillos', /TABACO|CAME
     inStock: true,
     image:
       "https://images.unsplash.com/photo-1608885898957-a599fb15ec35?q=80&w=600&auto=format&fit=crop",
+    barcode: "7799155000197",
   },
 
   // AGUAS SABORIZADAS
   {
     id: 5,
-    barcode: "7798085681834",
     cat: "aguas_saborizadas",
     name: "Jugo Cepita Naranja 1L",
     brand: "Cepita",
@@ -162,12 +164,12 @@ export const CATEGORY_RULES: [string, RegExp][] = [ ['cigarrillos', /TABACO|CAME
     inStock: true,
     image:
       "https://images.unsplash.com/photo-1613478223719-2ab802602423?q=80&w=600&auto=format&fit=crop",
+    barcode: "7798085681834",
   },
 
   // ENERGIZANTES
   {
     id: 6,
-    barcode: "70847032861",
     cat: "energizantes",
     name: "Monster Energy 473ml",
     brand: "Monster",
@@ -179,10 +181,10 @@ export const CATEGORY_RULES: [string, RegExp][] = [ ['cigarrillos', /TABACO|CAME
     inStock: true,
     image:
       "https://images.unsplash.com/photo-1622543953490-0b7ced3d6ac3?q=80&w=600&auto=format&fit=crop",
+    barcode: "70847032861",
   },
   {
     id: 8,
-    barcode: "7792170042012",
     cat: "energizantes",
     name: "Gatorade Naranja 500ml",
     brand: "Gatorade",
@@ -194,12 +196,12 @@ export const CATEGORY_RULES: [string, RegExp][] = [ ['cigarrillos', /TABACO|CAME
     inStock: true,
     image:
       "https://images.unsplash.com/photo-1551326844-301bd9b21f92?q=80&w=600&auto=format&fit=crop",
+    barcode: "7792170042012",
   },
 
   // KIOSCO
   {
     id: 9,
-    barcode: "7790040614000",
     cat: "kiosco",
     name: "Alfajor Rogel Triple",
     brand: "Jorgito",
@@ -211,10 +213,10 @@ export const CATEGORY_RULES: [string, RegExp][] = [ ['cigarrillos', /TABACO|CAME
     inStock: true,
     image:
       "https://images.unsplash.com/photo-1508737804141-4c3b688e25be?q=80&w=600&auto=format&fit=crop",
+    barcode: "7790040614000",
   },
   {
     id: 10,
-    barcode: "7790580060602",
     cat: "kiosco",
     name: "Sugus Surtido 50g",
     brand: "Nestlé",
@@ -226,10 +228,10 @@ export const CATEGORY_RULES: [string, RegExp][] = [ ['cigarrillos', /TABACO|CAME
     inStock: true,
     image:
       "https://images.unsplash.com/photo-1581798459219-318e76aaee7b?q=80&w=600&auto=format&fit=crop",
+    barcode: "7790580060602",
   },
   {
     id: 11,
-    barcode: "7790206008308",
     cat: "kiosco",
     name: "Mentitas Peppermint",
     brand: "Arcor",
@@ -241,10 +243,10 @@ export const CATEGORY_RULES: [string, RegExp][] = [ ['cigarrillos', /TABACO|CAME
     inStock: true,
     image:
       "https://images.unsplash.com/photo-1626202378290-7c2770d76db7?q=80&w=600&auto=format&fit=crop",
+    barcode: "7790206008308",
   },
   {
     id: 12,
-    barcode: "7798124360348",
     cat: "kiosco",
     name: "Gomitas Fantasia 50g",
     brand: "Arcor",
@@ -256,12 +258,12 @@ export const CATEGORY_RULES: [string, RegExp][] = [ ['cigarrillos', /TABACO|CAME
     inStock: true,
     image:
       "https://images.unsplash.com/photo-1582043211593-3f13903107c5?q=80&w=600&auto=format&fit=crop",
+    barcode: "7798124360348",
   },
 
   // SNACKS
   {
     id: 13,
-    barcode: "7790310982853",
     cat: "snacks",
     name: "Lays Classic 90g",
     brand: "Lays",
@@ -273,10 +275,10 @@ export const CATEGORY_RULES: [string, RegExp][] = [ ['cigarrillos', /TABACO|CAME
     inStock: true,
     image:
       "https://images.unsplash.com/photo-1566478989037-eec170784d0b?q=80&w=600&auto=format&fit=crop",
+    barcode: "7790310982853",
   },
   {
     id: 14,
-    barcode: "7790310985328",
     cat: "snacks",
     name: "Cheetos Flamin Hot 80g",
     brand: "Cheetos",
@@ -288,10 +290,10 @@ export const CATEGORY_RULES: [string, RegExp][] = [ ['cigarrillos', /TABACO|CAME
     inStock: true,
     image:
       "https://images.unsplash.com/photo-1599490656913-7e8c140cd0ac?q=80&w=600&auto=format&fit=crop",
+    barcode: "7790310985328",
   },
   {
     id: 15,
-    barcode: "7791249001929",
     cat: "snacks",
     name: "Palitos de la Selva 60g",
     brand: "Terrabusi",
@@ -303,12 +305,12 @@ export const CATEGORY_RULES: [string, RegExp][] = [ ['cigarrillos', /TABACO|CAME
     inStock: true,
     image:
       "https://images.unsplash.com/photo-1534080564583-6be75777b70a?q=80&w=600&auto=format&fit=crop",
+    barcode: "7791249001929",
   },
 
   // ALMACEN / GALLETITAS
   {
     id: 16,
-    barcode: "7790040003569",
     cat: "almacen",
     name: "Oreo Original 117g",
     brand: "Nabisco",
@@ -320,10 +322,10 @@ export const CATEGORY_RULES: [string, RegExp][] = [ ['cigarrillos', /TABACO|CAME
     inStock: true,
     image:
       "https://images.unsplash.com/photo-1558961309-dbd715c1390f?q=80&w=600&auto=format&fit=crop",
+    barcode: "7790040003569",
   },
   {
     id: 17,
-    barcode: "7622300339692",
     cat: "almacen",
     name: "Pepito Chocolate 100g",
     brand: "Bagley",
@@ -335,10 +337,10 @@ export const CATEGORY_RULES: [string, RegExp][] = [ ['cigarrillos', /TABACO|CAME
     inStock: true,
     image:
       "https://images.unsplash.com/photo-1499636136210-6f4ee915583e?q=80&w=600&auto=format&fit=crop",
+    barcode: "7622300339692",
   },
   {
     id: 18,
-    barcode: "7790040377806",
     cat: "almacen",
     name: "Criollitas 200g",
     brand: "Bagley",
@@ -350,10 +352,10 @@ export const CATEGORY_RULES: [string, RegExp][] = [ ['cigarrillos', /TABACO|CAME
     inStock: true,
     image:
       "https://images.unsplash.com/photo-1590080875515-8a3a8dc5735e?q=80&w=600&auto=format&fit=crop",
+    barcode: "7790040377806",
   },
   {
     id: 20,
-    barcode: "7622300990213",
     cat: "kiosco",
     name: "Milka Oreo 135g",
     brand: "Milka",
@@ -365,10 +367,10 @@ export const CATEGORY_RULES: [string, RegExp][] = [ ['cigarrillos', /TABACO|CAME
     inStock: true,
     image:
       "https://images.unsplash.com/photo-1511381939415-e44015466834?q=80&w=600&auto=format&fit=crop",
+    barcode: "7622300990213",
   },
   {
     id: 21,
-    barcode: "7614500010013",
     cat: "kiosco",
     name: "Toblerone 100g",
     brand: "Toblerone",
@@ -380,12 +382,12 @@ export const CATEGORY_RULES: [string, RegExp][] = [ ['cigarrillos', /TABACO|CAME
     inStock: true,
     image:
       "https://images.unsplash.com/photo-1549007994-cb92ca85edf6?q=80&w=600&auto=format&fit=crop",
+    barcode: "7614500010013",
   },
 
   // LACTEOS
   {
     id: 23,
-    barcode: "7793940088001",
     cat: "lacteos",
     name: "Leche La Serenísima 1L",
     brand: "La Serenísima",
@@ -397,10 +399,10 @@ export const CATEGORY_RULES: [string, RegExp][] = [ ['cigarrillos', /TABACO|CAME
     inStock: true,
     image:
       "https://images.unsplash.com/photo-1563636619-e9143da7973b?q=80&w=600&auto=format&fit=crop",
+    barcode: "7793940088001",
   },
   {
     id: 24,
-    barcode: "7791337007437",
     cat: "lacteos",
     name: "Yogur Ser Frutilla 190g",
     brand: "Ser",
@@ -412,10 +414,10 @@ export const CATEGORY_RULES: [string, RegExp][] = [ ['cigarrillos', /TABACO|CAME
     inStock: true,
     image:
       "https://images.unsplash.com/photo-1488477181946-6428a0291777?q=80&w=600&auto=format&fit=crop",
+    barcode: "7791337007437",
   },
   {
     id: 25,
-    barcode: "7790398100088",
     cat: "lacteos",
     name: "Manteca La Paulina 200g",
     brand: "La Paulina",
@@ -427,12 +429,12 @@ export const CATEGORY_RULES: [string, RegExp][] = [ ['cigarrillos', /TABACO|CAME
     inStock: true,
     image:
       "https://images.unsplash.com/photo-1589985270826-4b7bb135bc9d?q=80&w=600&auto=format&fit=crop",
+    barcode: "7790398100088",
   },
 
   // FIAMBRES
   {
     id: 26,
-    barcode: "7795917008661",
     cat: "fiambres",
     name: "Jamón Cocido x100g",
     brand: "Fargo",
@@ -444,10 +446,10 @@ export const CATEGORY_RULES: [string, RegExp][] = [ ['cigarrillos', /TABACO|CAME
     inStock: true,
     image:
       "https://images.unsplash.com/photo-1524438418049-ab2acb7aa48f?q=80&w=600&auto=format&fit=crop",
+    barcode: "7795917008661",
   },
   {
     id: 27,
-    barcode: "7790079019586",
     cat: "fiambres",
     name: "Salame Maggioni x100g",
     brand: "Maggioni",
@@ -459,10 +461,10 @@ export const CATEGORY_RULES: [string, RegExp][] = [ ['cigarrillos', /TABACO|CAME
     inStock: true,
     image:
       "https://images.unsplash.com/photo-1623945353139-4467c6999be3?q=80&w=600&auto=format&fit=crop",
+    barcode: "7790079019586",
   },
   {
     id: 28,
-    barcode: "7790625005353",
     cat: "fiambres",
     name: "Paleta Ahumada x100g",
     brand: "Paladini",
@@ -474,12 +476,12 @@ export const CATEGORY_RULES: [string, RegExp][] = [ ['cigarrillos', /TABACO|CAME
     inStock: true,
     image:
       "https://images.unsplash.com/photo-1544025162-d76694265947?q=80&w=600&auto=format&fit=crop",
+    barcode: "7790625005353",
   },
 
   // ALMACEN / PANTRY & MORE PRODUCTS
   {
     id: 30,
-    barcode: "2001100005344",
     cat: "almacen",
     name: "Queso Cremoso x100g",
     brand: "Milkaut",
@@ -491,10 +493,10 @@ export const CATEGORY_RULES: [string, RegExp][] = [ ['cigarrillos', /TABACO|CAME
     inStock: true,
     image:
       "https://images.unsplash.com/photo-1589881133595-a3c085cb1493?q=80&w=600&auto=format&fit=crop",
+    barcode: "2001100005344",
   },
   {
     id: 31,
-    barcode: "7793940376917",
     cat: "almacen",
     name: "Queso Pategrás x100g",
     brand: "La Paulina",
@@ -506,10 +508,10 @@ export const CATEGORY_RULES: [string, RegExp][] = [ ['cigarrillos', /TABACO|CAME
     inStock: true,
     image:
       "https://images.unsplash.com/photo-1552763405-1749be571d4b?q=80&w=600&auto=format&fit=crop",
+    barcode: "7793940376917",
   },
   {
     id: 43,
-    barcode: "7790230040008",
     cat: "almacen",
     name: "Fideos Matarazzo 500g",
     brand: "Matarazzo",
@@ -521,10 +523,10 @@ export const CATEGORY_RULES: [string, RegExp][] = [ ['cigarrillos', /TABACO|CAME
     inStock: true,
     image:
       "https://images.unsplash.com/photo-1551462147-37885abb36f7?q=80&w=600&auto=format&fit=crop",
+    barcode: "7790230040008",
   },
   {
     id: 44,
-    barcode: "7790070416179",
     cat: "almacen",
     name: "Arroz Gallo de Oro 1kg",
     brand: "Gallo de Oro",
@@ -536,10 +538,10 @@ export const CATEGORY_RULES: [string, RegExp][] = [ ['cigarrillos', /TABACO|CAME
     inStock: true,
     image:
       "https://images.unsplash.com/photo-1586201375761-83865001e31c?q=80&w=600&auto=format&fit=crop",
+    barcode: "7790070416179",
   },
   {
     id: 450,
-    barcode: "7790387110234",
     cat: "almacen",
     name: "Yerba Mate Taragüi 500g",
     brand: "Taragüi",
@@ -551,10 +553,10 @@ export const CATEGORY_RULES: [string, RegExp][] = [ ['cigarrillos', /TABACO|CAME
     inStock: true,
     image:
       "https://images.unsplash.com/photo-1510812431401-41d2bd2722f3?q=80&w=600&auto=format&fit=crop",
+    barcode: "7790387110234",
   },
   {
     id: 451,
-    barcode: "7796039001639",
     cat: "almacen",
     name: "Aceite de Girasol Natura 900ml",
     brand: "Natura",
@@ -566,10 +568,10 @@ export const CATEGORY_RULES: [string, RegExp][] = [ ['cigarrillos', /TABACO|CAME
     inStock: true,
     image:
       "https://images.unsplash.com/photo-1474979266404-7eaacbcd87c5?q=80&w=600&auto=format&fit=crop",
+    barcode: "7796039001639",
   },
   {
     id: 452,
-    barcode: "7790580129279",
     cat: "almacen",
     name: "Puré de Tomates Arcor 520g",
     brand: "Arcor",
@@ -581,10 +583,10 @@ export const CATEGORY_RULES: [string, RegExp][] = [ ['cigarrillos', /TABACO|CAME
     inStock: true,
     image:
       "https://images.unsplash.com/photo-1551462147-37885abb36f7?q=80&w=600&auto=format&fit=crop",
+    barcode: "7790580129279",
   },
   {
     id: 453,
-    barcode: "7794000004825",
     cat: "almacen",
     name: "Mayonesa Hellmanns 250g",
     brand: "Hellmann's",
@@ -596,10 +598,10 @@ export const CATEGORY_RULES: [string, RegExp][] = [ ['cigarrillos', /TABACO|CAME
     inStock: true,
     image:
       "https://images.unsplash.com/photo-1584622650111-993a426fbf0a?q=80&w=600&auto=format&fit=crop",
+    barcode: "7794000004825",
   },
   {
     id: 454,
-    barcode: "7792540000017",
     cat: "almacen",
     name: "Azúcar Ledesma Clásica 1kg",
     brand: "Ledesma",
@@ -611,10 +613,10 @@ export const CATEGORY_RULES: [string, RegExp][] = [ ['cigarrillos', /TABACO|CAME
     inStock: true,
     image:
       "https://images.unsplash.com/photo-1509440159596-0249088772ff?q=80&w=600&auto=format&fit=crop",
+    barcode: "7792540000017",
   },
   {
     id: 455,
-    barcode: "7792180134509",
     cat: "almacen",
     name: "Harina de Trigo Blancaflor 1kg",
     brand: "Blancaflor",
@@ -626,10 +628,10 @@ export const CATEGORY_RULES: [string, RegExp][] = [ ['cigarrillos', /TABACO|CAME
     inStock: true,
     image:
       "https://images.unsplash.com/photo-1509440159596-0249088772ff?q=80&w=600&auto=format&fit=crop",
+    barcode: "7792180134509",
   },
   {
     id: 456,
-    barcode: "7891167011717",
     cat: "almacen",
     name: "Atún al Natural Gomes da Costa 170g",
     brand: "Gomes da Costa",
@@ -641,12 +643,12 @@ export const CATEGORY_RULES: [string, RegExp][] = [ ['cigarrillos', /TABACO|CAME
     inStock: true,
     image:
       "https://images.unsplash.com/photo-1544025162-d76694265947?q=80&w=600&auto=format&fit=crop",
+    barcode: "7891167011717",
   },
 
   // PANIFICADOS
   {
     id: 33,
-    barcode: "7793890261233",
     cat: "panificados",
     name: "Pan Lactal Bimbo 400g",
     brand: "Bimbo",
@@ -658,10 +660,10 @@ export const CATEGORY_RULES: [string, RegExp][] = [ ['cigarrillos', /TABACO|CAME
     inStock: true,
     image:
       "https://images.unsplash.com/photo-1509440159596-0249088772ff?q=80&w=600&auto=format&fit=crop",
+    barcode: "7793890261233",
   },
   {
     id: 34,
-    barcode: "7790070030504",
     cat: "panificados",
     name: "Medialunas x6",
     brand: "Artesanal",
@@ -673,10 +675,10 @@ export const CATEGORY_RULES: [string, RegExp][] = [ ['cigarrillos', /TABACO|CAME
     inStock: true,
     image:
       "https://images.unsplash.com/photo-1555507036-ab1f4038808a?q=80&w=600&auto=format&fit=crop",
+    barcode: "7790070030504",
   },
   {
     id: 35,
-    barcode: "8480017555281",
     cat: "panificados",
     name: "Facturas Surtidas x4",
     brand: "Artesanal",
@@ -688,12 +690,12 @@ export const CATEGORY_RULES: [string, RegExp][] = [ ['cigarrillos', /TABACO|CAME
     inStock: true,
     image:
       "https://images.unsplash.com/photo-1608686207856-001b95cf60ca?q=80&w=600&auto=format&fit=crop",
+    barcode: "8480017555281",
   },
 
   // PERFUMERIA
   {
     id: 36,
-    barcode: "7791293030807",
     cat: "perfumeria",
     name: "Shampoo Elvive 400ml",
     brand: "L'Oréal",
@@ -705,10 +707,10 @@ export const CATEGORY_RULES: [string, RegExp][] = [ ['cigarrillos', /TABACO|CAME
     inStock: true,
     image:
       "https://images.unsplash.com/photo-1535585209827-a15fcdbc4c2d?q=80&w=600&auto=format&fit=crop",
+    barcode: "7791293030807",
   },
   {
     id: 37,
-    barcode: "7891150075382",
     cat: "perfumeria",
     name: "Jabón Dove 90g",
     brand: "Dove",
@@ -720,12 +722,12 @@ export const CATEGORY_RULES: [string, RegExp][] = [ ['cigarrillos', /TABACO|CAME
     inStock: true,
     image:
       "https://images.unsplash.com/photo-1607006342411-1a90e3d2ff0d?q=80&w=600&auto=format&fit=crop",
+    barcode: "7891150075382",
   },
 
   // LIMPIEZA
   {
     id: 40,
-    barcode: "7500435216562",
     cat: "limpieza",
     name: "Detergente Magistral 750ml",
     brand: "Magistral",
@@ -737,10 +739,10 @@ export const CATEGORY_RULES: [string, RegExp][] = [ ['cigarrillos', /TABACO|CAME
     inStock: true,
     image:
       "https://images.unsplash.com/photo-1622383563227-04401ab4e5ea?q=80&w=600&auto=format&fit=crop",
+    barcode: "7500435216562",
   },
   {
     id: 41,
-    barcode: "7793253004774",
     cat: "limpieza",
     name: "Lavandina Ayudín 1L",
     brand: "Ayudín",
@@ -752,12 +754,12 @@ export const CATEGORY_RULES: [string, RegExp][] = [ ['cigarrillos', /TABACO|CAME
     inStock: true,
     image:
       "https://images.unsplash.com/photo-1584622650111-993a426fbf0a?q=80&w=600&auto=format&fit=crop",
+    barcode: "7793253004774",
   },
 
   // VINOS
   {
     id: 50,
-    barcode: "7790415131231",
     cat: "vinos",
     name: "Vino Trapiche Malbec 750ml",
     brand: "Trapiche",
@@ -769,12 +771,12 @@ export const CATEGORY_RULES: [string, RegExp][] = [ ['cigarrillos', /TABACO|CAME
     inStock: true,
     image:
       "https://images.unsplash.com/photo-1510812431401-41d2bd2722f3?q=80&w=600&auto=format&fit=crop",
+    barcode: "7790415131231",
   },
 
   // FERNET
   {
     id: 52,
-    barcode: "7790290001193",
     cat: "fernet",
     name: "Fernet Branca 750ml",
     brand: "Branca",
@@ -786,12 +788,12 @@ export const CATEGORY_RULES: [string, RegExp][] = [ ['cigarrillos', /TABACO|CAME
     inStock: true,
     image:
       "https://images.unsplash.com/photo-1514362545857-3bc16c4c7d1b?q=80&w=600&auto=format&fit=crop",
+    barcode: "7790290001193",
   },
 
   // ALIMENTOS PARA PERROS (MASCOTAS)
   {
     id: 53,
-    barcode: "7798098847173",
     cat: "mascotas",
     name: "Pedigree Adultos 1kg",
     brand: "Pedigree",
@@ -803,12 +805,12 @@ export const CATEGORY_RULES: [string, RegExp][] = [ ['cigarrillos', /TABACO|CAME
     inStock: true,
     image:
       "https://images.unsplash.com/photo-1583511655857-d19b40a7a54e?q=80&w=600&auto=format&fit=crop",
+    barcode: "7798098847173",
   },
 
   // CONGELADOS
   {
     id: 55,
-    barcode: "810886011133",
     cat: "congelados",
     name: "Pizza Tia Maruca 350g",
     brand: "Tia Maruca",
@@ -820,12 +822,12 @@ export const CATEGORY_RULES: [string, RegExp][] = [ ['cigarrillos', /TABACO|CAME
     inStock: true,
     image:
       "https://images.unsplash.com/photo-1513104890138-7c749659a591?q=80&w=600&auto=format&fit=crop",
+    barcode: "810886011133",
   },
 
   // CERVEZAS
   {
     id: 56,
-    barcode: "7792798002351",
     cat: "cervezas",
     name: "Cerveza Patagonia Amber 410ml",
     brand: "Patagonia",
@@ -837,10 +839,10 @@ export const CATEGORY_RULES: [string, RegExp][] = [ ['cigarrillos', /TABACO|CAME
     inStock: true,
     image:
       "https://images.unsplash.com/photo-1563227812-0ea4c22e6cc8?q=80&w=600&auto=format&fit=crop",
+    barcode: "7792798002351",
   },
   {
     id: 57,
-    barcode: "7792798003709",
     cat: "cervezas",
     name: "Cerveza Corona Porrón 330ml",
     brand: "Corona",
@@ -852,12 +854,12 @@ export const CATEGORY_RULES: [string, RegExp][] = [ ['cigarrillos', /TABACO|CAME
     inStock: true,
     image:
       "https://images.unsplash.com/photo-1608270176050-ca2ca7db75fa?q=80&w=600&auto=format&fit=crop",
+    barcode: "7792798003709",
   },
 
   // HELADOS
   {
     id: 58,
-    barcode: "7790580130732",
     cat: "helados",
     name: "Pote Helado Frigor DDL 1L",
     brand: "Frigor",
@@ -869,12 +871,12 @@ export const CATEGORY_RULES: [string, RegExp][] = [ ['cigarrillos', /TABACO|CAME
     inStock: true,
     image:
       "https://images.unsplash.com/photo-1560008511-11c63416e52d?q=80&w=600&auto=format&fit=crop",
+    barcode: "7790580130732",
   },
 
   // APERITIVOS
   {
     id: 59,
-    barcode: "7891136052000",
     cat: "aperitivos",
     name: "Campari 750ml",
     brand: "Campari",
@@ -886,12 +888,12 @@ export const CATEGORY_RULES: [string, RegExp][] = [ ['cigarrillos', /TABACO|CAME
     inStock: true,
     image:
       "https://images.unsplash.com/photo-1574085733277-851d9d856a3a?q=80&w=600&auto=format&fit=crop",
+    barcode: "7891136052000",
   },
 
   // BEBIDAS BLANCAS
   {
     id: 60,
-    barcode: "7791250001857",
     cat: "bebidas_blancas",
     name: "Vodka Smirnoff 700ml",
     brand: "Smirnoff",
@@ -903,6 +905,7 @@ export const CATEGORY_RULES: [string, RegExp][] = [ ['cigarrillos', /TABACO|CAME
     inStock: true,
     image:
       "https://images.unsplash.com/photo-1510812431401-41d2bd2722f3?q=80&w=600&auto=format&fit=crop",
+    barcode: "7791250001857",
   },
 ];
 

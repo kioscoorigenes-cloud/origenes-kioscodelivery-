@@ -1,4 +1,3 @@
-import type { AppUser } from '../types';
 import React, { Component, useState, useMemo, useRef, useEffect } from 'react';
 import { AnimatePresence, m } from 'motion/react';
 import { 
@@ -8,10 +7,10 @@ import {
 } from 'lucide-react';
 import { collection, query, where, orderBy, limit, getDocs } from 'firebase/firestore';
 import { db } from '../firebase';
-import { Product, Order, Combo, Promo, PromoBanner, DeliveryZone } from '../types';
+import { Product, Order, Combo, Promo, PromoBanner, DeliveryZone, AppUser } from '../types';
 import { orderStatusStep, orderStatusLabel } from '../utils/orderStatus';
 import { playChime } from '../utils/audio';
-import { CATS, CAT_ABBR, CAT_BG, COMBOS, PROMOS_LIST, getFallbackStoreImage, isDeliveryAvailableNow, inferCategory } from '../data';
+import { CATS, HIDDEN_CATS, CAT_ABBR, CAT_BG, COMBOS, PROMOS_LIST, getFallbackStoreImage, isDeliveryAvailableNow, inferCategory } from '../data';
 import { DeliveryMapTracker } from './DeliveryMapTracker';
 import { Modal } from './Modal';
 import origenesLogo from '../assets/images/origenes_emblem_128.png';
@@ -51,16 +50,19 @@ interface StorefrontProps {
   deliveryCutoffHour?: number;
 }
 
-const parseOrderDate = (timestamp: any): Date => {
+/** Firestore Timestamp o cualquier valor que pueda representar una fecha */
+type TimestampLike = string | number | Date | { seconds: number } | { _seconds: number } | { toDate: () => Date } | null | undefined;
+
+const parseOrderDate = (timestamp: TimestampLike): Date => {
   if (!timestamp) return new Date();
   if (typeof timestamp === 'string') return new Date(timestamp);
   if (typeof timestamp === 'number') return new Date(timestamp);
-  if (timestamp.seconds !== undefined) return new Date(timestamp.seconds * 1000);
-  if (timestamp._seconds !== undefined) return new Date(timestamp._seconds * 1000);
-  if (timestamp.toDate && typeof timestamp.toDate === 'function') return timestamp.toDate();
-  const d = new Date(timestamp);
-  if (isNaN(d.getTime())) return new Date();
-  return d;
+  if (timestamp instanceof Date) return timestamp;
+  const ts = timestamp as Record<string, unknown>;
+  if (typeof ts.seconds === 'number') return new Date(ts.seconds * 1000);
+  if (typeof ts._seconds === 'number') return new Date(ts._seconds * 1000);
+  if (typeof ts.toDate === 'function') return (ts as { toDate: () => Date }).toDate();
+  return new Date();
 };
 
 interface MapsErrorBoundaryProps {
@@ -237,7 +239,8 @@ export const Storefront: React.FC<StorefrontProps> = ({
         const snapshot = await getDocs(q);
         const results: Product[] = [];
         snapshot.forEach(docSnap => {
-          results.push(docSnap.data() as Product);
+          const p = docSnap.data() as Product;
+          if (!HIDDEN_CATS.has(p.cat)) results.push(p);
         });
 
         // Apply healing to search results (maintaining image fallback logic as required)
@@ -423,7 +426,7 @@ export const Storefront: React.FC<StorefrontProps> = ({
       entregado: '\ud83c\udf89 \u00a1Pedido ENTREGADO! Gracias por tu compra.',
       cancelado: '\u274c Tu pedido fue cancelado. Consultanos por WhatsApp si tenes dudas.',
     };
-    const msg = NOTIFY_MSGS[status] || `Tu pedido cambio de estado: ${orderStatusLabel(status as Order['status'], delivery as 'envio' | 'retiro')}`;
+    const msg = NOTIFY_MSGS[status as keyof typeof NOTIFY_MSGS] || `Tu pedido cambio de estado: ${orderStatusLabel(status as Order['status'], delivery as Order['delivery'])}`;
 
     showToast(msg);
     try { playChime(); } catch (e) { /* sin audio */ }
@@ -2121,8 +2124,8 @@ const compressImage = (dataUrl: string, maxDim: number = 1024, quality: number =
                   <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="currentColor" className={currentCat === 'favorites' ? 'text-white' : 'text-blue-500'}><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/></svg>
                   Mis Favoritos ({favorites.length})
                 </button>
-                {CATS.map((c) => (
-                  <button 
+                {CATS.filter(c => !HIDDEN_CATS.has(c.id)).map((c) => (
+                  <button
                     key={c.id}
                     onClick={(e) => {
                       if (isDraggingCat.current) {
