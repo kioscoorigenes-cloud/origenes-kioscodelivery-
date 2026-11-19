@@ -1607,9 +1607,13 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
       if (Math.abs(starposPrice - fp.price) < 0.01) {
         samePrice++;
         // Aunque el precio sea igual, si el stock cambió hay que actualizar
-        const currentInStock = typeof fp.inStock === 'boolean' ? fp.inStock : false; // default false si no existe
-        if (match.inStock !== currentInStock) {
-          const stockData: Record<string, any> = { inStock: match.inStock };
+        // IMPORTANTE: si el producto tiene stockQty local (gestionado por ventas), no sobrescribir
+        // con el booleano de StarPOS — el dato numérico local es más preciso
+        const currentInStock = typeof fp.inStock === 'boolean' ? fp.inStock : false;
+        const hasLocalStock = typeof (fp as any).stockQty === 'number';
+        const resolvedInStock = hasLocalStock ? currentInStock : match.inStock;
+        if (resolvedInStock !== currentInStock) {
+          const stockData: Record<string, any> = { inStock: resolvedInStock };
           if (!fp.cat) {
             const guessed = guessCategoryFromName(fp.name);
             if (guessed) stockData.cat = guessed;
@@ -1658,7 +1662,10 @@ export async function pullPricesFromStarPOS(): Promise<SyncPricesResult> {
       // Actualizar precio y stock desde StarPOS — no tocar nada más (fotos, nombre, categoría)
       // Si no tiene categoría, intentar asignarla automáticamente por nombre
       // Usar set+merge en vez de update para no fallar si el doc no existe aún
-      const updateData: Record<string, any> = { price: starposPrice, inStock: match.inStock };
+      // IMPORTANTE: si tiene stockQty local (ventas descontaron), respetar ese dato sobre el booleano de StarPOS
+      const hasLocalStockQty = typeof (fp as any).stockQty === 'number';
+      const resolvedStock = hasLocalStockQty ? (typeof fp.inStock === 'boolean' ? fp.inStock : false) : match.inStock;
+      const updateData: Record<string, any> = { price: starposPrice, inStock: resolvedStock };
       if (!fp.cat) {
         const guessed = guessCategoryFromName(fp.name);
         if (guessed) updateData.cat = guessed;

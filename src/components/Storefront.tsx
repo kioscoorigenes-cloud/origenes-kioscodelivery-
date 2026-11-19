@@ -10,7 +10,7 @@ import { db } from '../firebase';
 import { Product, Order, Combo, Promo, PromoBanner, DeliveryZone, AppUser } from '../types';
 import { orderStatusStep, orderStatusLabel } from '../utils/orderStatus';
 import { playChime } from '../utils/audio';
-import { CATS, HIDDEN_CATS, CAT_ABBR, CAT_BG, COMBOS, PROMOS_LIST, getFallbackStoreImage, isDeliveryAvailableNow, inferCategory } from '../data';
+import { CATS, HIDDEN_CATS, ALCOHOL_CATS, CAT_ABBR, CAT_BG, COMBOS, PROMOS_LIST, getFallbackStoreImage, isDeliveryAvailableNow, inferCategory } from '../data';
 import { DeliveryMapTracker } from './DeliveryMapTracker';
 import { Modal } from './Modal';
 import origenesLogo from '../assets/images/origenes_emblem_128.png';
@@ -187,7 +187,12 @@ export const Storefront: React.FC<StorefrontProps> = ({
     }
   };
   const [currentCat, setCurrentCat] = useState<string>('all');
-  
+  // Age-gate: verificación de edad para categorías de alcohol (Google Play policy)
+  const [ageVerified, setAgeVerified] = useState<boolean>(() => {
+    try { return sessionStorage.getItem('origenes_age_verified') === 'true'; } catch { return false; }
+  });
+  const [pendingAlcoholCat, setPendingAlcoholCat] = useState<string | null>(null);
+
   useEffect(() => {
     if (onDbCategoryChange) {
       onDbCategoryChange(currentCat);
@@ -2133,6 +2138,11 @@ const compressImage = (dataUrl: string, maxDim: number = 1024, quality: number =
                         e.stopPropagation();
                         return;
                       }
+                      // Age-gate: si es categoría de alcohol y no verificó edad, pedir confirmación
+                      if (ALCOHOL_CATS.has(c.id) && !ageVerified) {
+                        setPendingAlcoholCat(c.id);
+                        return;
+                      }
                       setCurrentCat(c.id);
                     }}
                     className={`px-4 py-2 rounded-full text-xs font-black whitespace-nowrap transition-all border ${
@@ -2987,6 +2997,52 @@ const compressImage = (dataUrl: string, maxDim: number = 1024, quality: number =
 
       {/* CORE MODAL FOR OUT-OF-STOCK PRODUCT AND SIMILAR SUGGESTIONS */}
       <AnimatePresence>
+        {/* Age verification modal — Google Play alcohol policy compliance */}
+        {pendingAlcoholCat && (
+          <Modal
+            id="age-verification-modal"
+            className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center cursor-pointer"
+            onClose={() => setPendingAlcoholCat(null)}
+            labelledBy="age-verification-title"
+          >
+            <div
+              className="bg-white rounded-2xl shadow-xl mx-4 p-6 max-w-sm w-full text-center cursor-default"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="text-4xl mb-3">🔞</div>
+              <h3 id="age-verification-title" className="text-lg font-bold text-slate-800 mb-2">
+                Verificación de edad
+              </h3>
+              <p className="text-sm text-slate-600 mb-5">
+                Esta sección contiene bebidas alcohólicas. Según la ley argentina,
+                la venta de alcohol está prohibida a menores de 18 años.
+              </p>
+              <p className="text-sm font-semibold text-slate-700 mb-4">
+                ¿Confirmás que tenés 18 años o más?
+              </p>
+              <div className="flex gap-3">
+                <button
+                  onClick={() => setPendingAlcoholCat(null)}
+                  className="flex-1 py-2.5 px-4 rounded-xl border border-slate-300 text-slate-600 font-semibold text-sm hover:bg-slate-50"
+                >
+                  No, soy menor
+                </button>
+                <button
+                  onClick={() => {
+                    setAgeVerified(true);
+                    try { sessionStorage.setItem('origenes_age_verified', 'true'); } catch {}
+                    setCurrentCat(pendingAlcoholCat);
+                    setPendingAlcoholCat(null);
+                  }}
+                  className="flex-1 py-2.5 px-4 rounded-xl bg-blue-600 text-white font-semibold text-sm hover:bg-blue-700"
+                >
+                  Sí, tengo +18
+                </button>
+              </div>
+            </div>
+          </Modal>
+        )}
+
         {selectedProduct && (
           <Modal
             id="prod-modal-wrapper"

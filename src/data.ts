@@ -3,6 +3,12 @@ import { Product, Category, Combo, Promo } from "./types";
 // Categorías ocultas en la app (Google Play policy — tobacco/nicotine)
 export const HIDDEN_CATS = new Set(['cigarrillos']);
 
+// Categorías de alcohol — requieren verificación de edad (+18) antes de mostrar productos
+// Google Play policy: apps que venden alcohol deben tener age-gate
+export const ALCOHOL_CATS = new Set([
+  'cervezas', 'fernet', 'vinos', 'bebidas_blancas', 'aperitivos'
+]);
+
 export const CATS: Category[] = [
   { id: "kiosco", name: "🍫 Kiosco" },
   { id: "almacen", name: "🥫 Almacén" },
