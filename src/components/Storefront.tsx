@@ -219,8 +219,21 @@ export const Storefront: React.FC<StorefrontProps> = ({
     const delayDebounceFn = setTimeout(async () => {
       try {
         const lowerTerm = term.toLowerCase();
+        const searchWords = lowerTerm.split(/\s+/).filter(w => w.length >= 2);
+
+        // B\u00fasqueda h\u00edbrida: primero en memoria (cualquier palabra), luego Firestore (prefijo)
+        // Esto permite buscar "quilmes" y encontrar "Cerveza Quilmes Cl\u00e1sica"
+        const inMemoryResults: Product[] = products.filter(p => {
+          if (HIDDEN_CATS.has(p.cat)) return false;
+          if (currentCat !== 'all' && currentCat !== 'favorites' && p.cat !== currentCat) return false;
+          const pName = (p.name_lower || p.name?.toLowerCase() || '');
+          // Cada palabra buscada debe aparecer en el nombre del producto
+          return searchWords.every(w => pName.includes(w));
+        });
+        const inMemoryIds = new Set(inMemoryResults.map(p => p.id));
+
+        // Complementar con Firestore prefix search para productos no cargados en memoria
         const baseCol = collection(db, 'products');
-        
         let q;
         if (currentCat !== 'all' && currentCat !== 'favorites') {
           q = query(
@@ -242,14 +255,17 @@ export const Storefront: React.FC<StorefrontProps> = ({
         }
 
         const snapshot = await getDocs(q);
-        const results: Product[] = [];
+        const firestoreResults: Product[] = [];
         snapshot.forEach(docSnap => {
           const p = docSnap.data() as Product;
-          if (!HIDDEN_CATS.has(p.cat)) results.push(p);
+          if (!HIDDEN_CATS.has(p.cat) && !inMemoryIds.has(p.id)) firestoreResults.push(p);
         });
 
+        // Combinar: in-memory primero (m\u00e1s relevantes), luego Firestore extras
+        const combined = [...inMemoryResults, ...firestoreResults];
+
         // Apply healing to search results (maintaining image fallback logic as required)
-        const healedResults = results.map(p => {
+        const healedResults = combined.map(p => {
           if (!p.image || p.image.trim() === '' || !p.image.startsWith('http')) {
             const match = products.find(x => x.id === p.id);
             if (match && match.image && match.image.trim() !== '') return { ...p, image: match.image };
@@ -1914,8 +1930,9 @@ const compressImage = (dataUrl: string, maxDim: number = 1024, quality: number =
                             <img 
                               src={p.image} 
                               alt={p.name} 
-                              className="w-full h-full object-cover animate-fade-in" 
+                              className="w-full h-full object-cover animate-fade-in"
                               referrerPolicy="no-referrer"
+                              loading="lazy"
                               onError={(e) => {
                                 e.currentTarget.onerror = null;
                                 e.currentTarget.src = getFallbackStoreImage(p.name, p.brand, p.cat);
@@ -2240,8 +2257,9 @@ const compressImage = (dataUrl: string, maxDim: number = 1024, quality: number =
                             <img 
                               src={p.image} 
                               alt={p.name} 
-                              className="w-full h-full object-cover animate-fade-in" 
+                              className="w-full h-full object-cover animate-fade-in"
                               referrerPolicy="no-referrer"
+                              loading="lazy"
                               onError={(e) => {
                                 e.currentTarget.onerror = null;
                                 e.currentTarget.src = getFallbackStoreImage(p.name, p.brand, p.cat);
@@ -2527,8 +2545,9 @@ const compressImage = (dataUrl: string, maxDim: number = 1024, quality: number =
                             <img 
                               src={p.image} 
                               alt={p.name} 
-                              className="w-full h-full object-cover animate-fade-in" 
+                              className="w-full h-full object-cover animate-fade-in"
                               referrerPolicy="no-referrer"
+                              loading="lazy"
                               onError={(e) => {
                                 e.currentTarget.onerror = null;
                                 e.currentTarget.src = getFallbackStoreImage(p.name, p.brand, p.cat);
@@ -2751,8 +2770,9 @@ const compressImage = (dataUrl: string, maxDim: number = 1024, quality: number =
                                   <img 
                                     src={p.image} 
                                     alt={p.name} 
-                                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" 
+                                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                                     referrerPolicy="no-referrer"
+                                    loading="lazy"
                                     onError={(e) => {
                                       e.currentTarget.onerror = null;
                                       e.currentTarget.src = getFallbackStoreImage(p.name, p.brand, p.cat);
@@ -3151,8 +3171,9 @@ const compressImage = (dataUrl: string, maxDim: number = 1024, quality: number =
                               <img 
                                 src={p.image} 
                                 alt={p.name} 
-                                className="w-full h-full object-cover animate-fade-in" 
+                                className="w-full h-full object-cover animate-fade-in"
                                 referrerPolicy="no-referrer"
+                                loading="lazy"
                                 onError={(e) => {
                                   e.currentTarget.onerror = null;
                                   e.currentTarget.src = getFallbackStoreImage(p.name, p.brand, p.cat);

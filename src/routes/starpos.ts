@@ -1,5 +1,6 @@
 // Extraido de server.ts: los handlers se agruparon por dominio.
 import { Router } from "express";
+import rateLimit from "express-rate-limit";
 import type { Firestore } from "firebase/firestore";
 import {
   authenticateStarPOS,
@@ -10,6 +11,15 @@ import {
   populateBarcodes
 } from "../services/starpos";
 import { requireAdmin, getAdminFirestore } from "../services/serverAuth";
+
+// Rate limiter para endpoints cron — máximo 5 requests por minuto por IP
+const cronLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 5,
+  message: { error: "Demasiadas solicitudes. Intente en un minuto." },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
 
 export function starposRoutes({ firestoreDb }: { firestoreDb: Firestore }): Router {
   const router = Router();
@@ -56,7 +66,7 @@ export function starposRoutes({ firestoreDb }: { firestoreDb: Firestore }): Rout
           serviceUrl: config.serviceUrl,
           secretMasked: config.secret.length > 4 ? "***" + config.secret.slice(-4) : "***"
         },
-        token: token.slice(0, 8) + "..."
+        tokenConfigured: true  // No exponer el token en la respuesta
       });
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : String(err);
@@ -452,7 +462,7 @@ export function starposRoutes({ firestoreDb }: { firestoreDb: Firestore }): Rout
   });
 
     // Pull prices con cron-token (para testing sin auth Firebase)
-  router.post("/pull-prices-cron", async (req, res) => {
+  router.post("/pull-prices-cron", cronLimiter, async (req, res) => {
     const token = req.headers["x-cron-token"];
     const expected = process.env.CRON_SECRET_TOKEN;
     if (!expected || token !== expected) {
@@ -471,7 +481,7 @@ export function starposRoutes({ firestoreDb }: { firestoreDb: Firestore }): Rout
   // FIX-PRICES: Corregir precios específicos manualmente
   // Protegido por token secreto. Body: { fixes: [{name: "...", price: 1234}] }
   // ==========================================
-  router.post("/fix-prices", async (req, res) => {
+  router.post("/fix-prices", cronLimiter, async (req, res) => {
     const token = req.headers["x-cron-token"];
     const expected = process.env.CRON_SECRET_TOKEN;
     if (!expected || token !== expected) {
@@ -518,7 +528,7 @@ export function starposRoutes({ firestoreDb }: { firestoreDb: Firestore }): Rout
   // AUTO-SYNC DIARIO (llamado por cron/scheduled task)
   // Protegido por token secreto en lugar de auth de admin
   // ==========================================
-  router.post("/auto-sync", async (req, res) => {
+  router.post("/auto-sync", cronLimiter, async (req, res) => {
     const token = req.headers["x-cron-token"];
     const expected = process.env.CRON_SECRET_TOKEN;
 
@@ -596,7 +606,7 @@ export function starposRoutes({ firestoreDb }: { firestoreDb: Firestore }): Rout
   });
 
   // Diagnóstico rápido de conexión StarPOS (protegido por cron token, no requiere Firebase auth)
-  router.get("/diagnose-quick", async (req, res) => {
+  router.get("/diagnose-quick", cronLimiter, async (req, res) => {
     const token = req.headers["x-cron-token"];
     const expected = process.env.CRON_SECRET_TOKEN;
     if (!expected || token !== expected) {
@@ -707,7 +717,7 @@ export function starposRoutes({ firestoreDb }: { firestoreDb: Firestore }): Rout
 
   // Populate barcodes: one-shot para cruzar nombres Firestore↔StarPOS y grabar barcodes
   // Protegido con cron token (mismo que auto-sync)
-  router.post("/populate-barcodes", async (req, res) => {
+  router.post("/populate-barcodes", cronLimiter, async (req, res) => {
     const token = req.headers['x-cron-token'];
     if (token !== process.env.CRON_SECRET_TOKEN) {
       return res.status(401).json({ error: 'Token inválido' });

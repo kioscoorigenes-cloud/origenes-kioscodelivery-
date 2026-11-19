@@ -11,6 +11,15 @@ const freeShippingLimiter = rateLimit({
   message: { available: false }
 });
 
+// Rate limiter para endpoints cron/admin — máximo 5 requests por minuto por IP
+const cronLimiter = rateLimit({
+  windowMs: 60 * 1000,
+  limit: 5,
+  message: { error: "Demasiadas solicitudes. Intente en un minuto." },
+  standardHeaders: true,
+  legacyHeaders: false,
+});
+
 export function storeRoutes(): Router {
   const router = Router();
 
@@ -50,7 +59,7 @@ export function storeRoutes(): Router {
   // Endpoint temporal protegido para exportar productos de Firestore.
   // Uso: GET /api/store/export-products?limit=100&startAfter=docId  (header: x-cron-token)
   // PERF-03: paginación para no cargar todo en memoria de una vez.
-  router.get("/export-products", async (req, res) => {
+  router.get("/export-products", cronLimiter, async (req, res) => {
     const token = req.headers["x-cron-token"];
     const expected = process.env.CRON_SECRET_TOKEN;
     if (!expected || token !== expected) {
@@ -90,7 +99,7 @@ export function storeRoutes(): Router {
 
   // PATCH masivo: asignar cat + name_lower a productos que lo tengan vacío.
   // POST /api/store/patch-products  body: { ids: ["2790","2837",...], cat: "perfumeria" }
-  router.post("/patch-products", async (req, res) => {
+  router.post("/patch-products", cronLimiter, async (req, res) => {
     const token = req.headers["x-cron-token"];
     const expected = process.env.CRON_SECRET_TOKEN;
     if (!expected || token !== expected) {
@@ -133,7 +142,7 @@ export function storeRoutes(): Router {
   // One-time: marcar inStock=false los productos que no tienen stockQty
   // (nunca pasaron por sync) y tenían inStock=true por el viejo default.
   // POST /api/store/fix-instock-defaults  (header: x-cron-token)
-  router.post("/fix-instock-defaults", async (req, res) => {
+  router.post("/fix-instock-defaults", cronLimiter, async (req, res) => {
     const token = req.headers["x-cron-token"];
     const expected = process.env.CRON_SECRET_TOKEN;
     if (!expected || token !== expected) {

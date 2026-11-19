@@ -153,7 +153,7 @@ export function facturadorRoutes(): Router {
       status: (hasUrl && hasKey) ? "CONECTADO" : "SIMULADO_LOCAL",
       provider: "Adaptador Genérico de Control Sincrónico",
       api_url: creds.apiUrl || "https://api.facturadorexterno.com/v1",
-      api_key_masked: hasKey ? `${creds.apiKey.slice(0, 4)}***${creds.apiKey.slice(-3)}` : "MODO_DEMOSTRACION_SIN_SECRETOS",
+      api_key_masked: hasKey ? `***${creds.apiKey.slice(-4)}` : "MODO_DEMOSTRACION_SIN_SECRETOS",
       lastCheck: new Date().toISOString()
     });
   });
