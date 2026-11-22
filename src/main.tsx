@@ -1,5 +1,6 @@
 import { StrictMode, Component, type ReactNode, type ErrorInfo } from 'react';
 import { createRoot } from 'react-dom/client';
+import { HashRouter } from 'react-router-dom';
 import App from './App.tsx';
 import './index.css';
 
@@ -60,7 +61,9 @@ class GlobalErrorBoundary extends Component<Props, State> {
 createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <GlobalErrorBoundary>
-      <App />
+      <HashRouter>
+        <App />
+      </HashRouter>
     </GlobalErrorBoundary>
   </StrictMode>,
 );
