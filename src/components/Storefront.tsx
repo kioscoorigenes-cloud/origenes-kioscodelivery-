@@ -1,16 +1,22 @@
-import React, { Component, useState, useMemo, useRef, useEffect } from 'react';
+import React, { Component, useState, useMemo, useRef, useEffect, useCallback } from 'react';
 import { AnimatePresence, m } from 'motion/react';
-import { 
-  ShoppingCart, Search, MapPin, Phone, Info, ShoppingBag, 
-  Trash2, Plus, Minus, ArrowRight, ArrowLeft, ChevronRight, CheckCircle2, 
-  Clock, Sparkles, Star, FastForward, HelpCircle, User, X, WifiOff, Download, Smartphone
+import { useNavigate, useLocation } from 'react-router-dom';
+import { FixedSizeList } from 'react-window';
+import {
+  ShoppingCart, Search, MapPin, Phone, Info, ShoppingBag,
+  Trash2, Plus, Minus, ArrowRight, ArrowLeft, ChevronRight, CheckCircle2,
+  Clock, Sparkles, Star, FastForward, HelpCircle, User, X, WifiOff, Download, Smartphone, ClipboardList, RotateCcw
 } from 'lucide-react';
-import { collection, query, where, orderBy, limit, getDocs } from 'firebase/firestore';
+import { collection, query, where, orderBy, limit, getDocs, doc, getDoc, setDoc } from 'firebase/firestore';
 import { db } from '../firebase';
+import { ProductRow } from './ProductRow';
+import { BottomNav, pathToTab, tabToPath } from './BottomNav';
+import type { TabId } from './BottomNav';
+import { PedidosTab } from './PedidosTab';
 import { Product, Order, Combo, Promo, PromoBanner, DeliveryZone, AppUser } from '../types';
 import { orderStatusStep, orderStatusLabel } from '../utils/orderStatus';
 import { playChime } from '../utils/audio';
-import { CATS, HIDDEN_CATS, CAT_ABBR, CAT_BG, COMBOS, PROMOS_LIST, getFallbackStoreImage, isDeliveryAvailableNow, inferCategory } from '../data';
+import { CATS, HIDDEN_CATS, ALCOHOL_CATS, CAT_ABBR, CAT_BG, COMBOS, PROMOS_LIST, getFallbackStoreImage, isDeliveryAvailableNow, inferCategory } from '../data';
 import { DeliveryMapTracker } from './DeliveryMapTracker';
 import { Modal } from './Modal';
 import origenesLogo from '../assets/images/origenes_emblem_128.png';
@@ -164,30 +170,29 @@ export const Storefront: React.FC<StorefrontProps> = ({
     ? combos.filter(c => c.active !== false)
     : COMBOS;
 
-  const [currentTab, _setCurrentTab] = useState<'home' | 'catalog' | 'promos' | 'combos' | 'cart'>('home');
-  const [tabHistory, setTabHistory] = useState<('home' | 'catalog' | 'promos' | 'combos' | 'cart')[]>(['home']);
+  // ── React Router: derivar tab de la URL ──────────────────────────
+  const navigate = useNavigate();
+  const location = useLocation();
+  const currentTab: TabId = pathToTab(location.pathname);
 
-  const setCurrentTab = (newTab: 'home' | 'catalog' | 'promos' | 'combos' | 'cart') => {
-    _setCurrentTab(newTab);
-    setTabHistory(prev => {
-      if (prev[prev.length - 1] === newTab) return prev;
-      return [...prev, newTab];
-    });
-  };
+  const setCurrentTab = useCallback((newTab: TabId) => {
+    navigate(tabToPath(newTab));
+  }, [navigate]);
 
-  const handleGoBack = () => {
-    if (tabHistory.length > 1) {
-      const copy = [...tabHistory];
-      copy.pop(); // remove current tab
-      const prev = copy[copy.length - 1] || 'home';
-      _setCurrentTab(prev);
-      setTabHistory(copy);
+  const handleGoBack = useCallback(() => {
+    if (window.history.length > 1) {
+      navigate(-1);
     } else {
-      _setCurrentTab('home');
+      navigate('/');
     }
-  };
+  }, [navigate]);
   const [currentCat, setCurrentCat] = useState<string>('all');
-  
+  // Age-gate: verificación de edad para categorías de alcohol (Google Play policy)
+  const [ageVerified, setAgeVerified] = useState<boolean>(() => {
+    try { return sessionStorage.getItem('origenes_age_verified') === 'true'; } catch { return false; }
+  });
+  const [pendingAlcoholCat, setPendingAlcoholCat] = useState<string | null>(null);
+
   useEffect(() => {
     if (onDbCategoryChange) {
       onDbCategoryChange(currentCat);
@@ -214,8 +219,21 @@ export const Storefront: React.FC<StorefrontProps> = ({
     const delayDebounceFn = setTimeout(async () => {
       try {
         const lowerTerm = term.toLowerCase();
+        const searchWords = lowerTerm.split(/\s+/).filter(w => w.length >= 2);
+
+        // B\u00fasqueda h\u00edbrida: primero en memoria (cualquier palabra), luego Firestore (prefijo)
+        // Esto permite buscar "quilmes" y encontrar "Cerveza Quilmes Cl\u00e1sica"
+        const inMemoryResults: Product[] = products.filter(p => {
+          if (HIDDEN_CATS.has(p.cat)) return false;
+          if (currentCat !== 'all' && currentCat !== 'favorites' && p.cat !== currentCat) return false;
+          const pName = (p.name_lower || p.name?.toLowerCase() || '');
+          // Cada palabra buscada debe aparecer en el nombre del producto
+          return searchWords.every(w => pName.includes(w));
+        });
+        const inMemoryIds = new Set(inMemoryResults.map(p => p.id));
+
+        // Complementar con Firestore prefix search para productos no cargados en memoria
         const baseCol = collection(db, 'products');
-        
         let q;
         if (currentCat !== 'all' && currentCat !== 'favorites') {
           q = query(
@@ -237,14 +255,17 @@ export const Storefront: React.FC<StorefrontProps> = ({
         }
 
         const snapshot = await getDocs(q);
-        const results: Product[] = [];
+        const firestoreResults: Product[] = [];
         snapshot.forEach(docSnap => {
           const p = docSnap.data() as Product;
-          if (!HIDDEN_CATS.has(p.cat)) results.push(p);
+          if (!HIDDEN_CATS.has(p.cat) && !inMemoryIds.has(p.id)) firestoreResults.push(p);
         });
 
+        // Combinar: in-memory primero (m\u00e1s relevantes), luego Firestore extras
+        const combined = [...inMemoryResults, ...firestoreResults];
+
         // Apply healing to search results (maintaining image fallback logic as required)
-        const healedResults = results.map(p => {
+        const healedResults = combined.map(p => {
           if (!p.image || p.image.trim() === '' || !p.image.startsWith('http')) {
             const match = products.find(x => x.id === p.id);
             if (match && match.image && match.image.trim() !== '') return { ...p, image: match.image };
@@ -382,7 +403,7 @@ export const Storefront: React.FC<StorefrontProps> = ({
 
     setCart(newCart);
     setShowHistoryModal(false);
-    _setCurrentTab('cart');
+    navigate('/cart');
     showToast("🛒 ¡Pedido cargado al carrito! 🔄");
   };
 
@@ -924,6 +945,43 @@ const compressImage = (dataUrl: string, maxDim: number = 1024, quality: number =
     });
   };
 
+  // ── Sync favoritos con Firestore ──────────────────────────────────
+  const favSyncedRef = useRef(false);
+  useEffect(() => {
+    const phone = (() => { try { return localStorage.getItem('origenes_last_phone') ?? ''; } catch { return ''; } })();
+    if (!phone) return;
+    const favDocRef = doc(db, 'favorites', phone);
+    // Al montar: leer Firestore y merge con localStorage
+    if (!favSyncedRef.current) {
+      favSyncedRef.current = true;
+      getDoc(favDocRef).then(snap => {
+        if (snap.exists()) {
+          const remote: number[] = snap.data().productIds ?? [];
+          setFavorites(local => {
+            const merged = Array.from(new Set([...local, ...remote]));
+            localStorage.setItem('origenes_favorites', JSON.stringify(merged));
+            return merged;
+          });
+        } else {
+          // No existe en Firestore — subir localStorage
+          if (favorites.length > 0) {
+            setDoc(favDocRef, { productIds: favorites }, { merge: true }).catch(() => {});
+          }
+        }
+      }).catch(() => {});
+    }
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  // Guardar en Firestore cada vez que cambian los favoritos
+  useEffect(() => {
+    if (!favSyncedRef.current) return; // No guardar antes del sync inicial
+    const phone = (() => { try { return localStorage.getItem('origenes_last_phone') ?? ''; } catch { return ''; } })();
+    if (!phone) return;
+    const favDocRef = doc(db, 'favorites', phone);
+    setDoc(favDocRef, { productIds: favorites }, { merge: true }).catch(() => {});
+  }, [favorites]);
+
   const [showAccountModal, setShowAccountModal] = useState<boolean>(false);
   const [showInstallGuide, setShowInstallGuide] = useState<boolean>(false);
   const [fidelityPoints, setFidelityPoints] = useState<number>(() => {
@@ -948,27 +1006,29 @@ const compressImage = (dataUrl: string, maxDim: number = 1024, quality: number =
     setPaymentMethod('transferencia_qr');
   };
 
-  const handleApplyCoupon = () => {
+  const handleApplyCoupon = async () => {
     const code = couponInput.trim().toUpperCase();
-
-    if (code === 'DESCUENTO10') {
-      setAppliedCoupon({ code, type: 'discount', value: 0.10 });
-      setCouponError('');
-      setCouponInput('');
-      showToast('🎟️ ¡Cupón DESCUENTO10 (10%) aplicado!');
-    } else if (code === 'CANDY20') {
-      setAppliedCoupon({ code, type: 'discount', value: 0.20 });
-      setCouponError('');
-      setCouponInput('');
-      showToast('🎟️ ¡Cupón CANDY20 (20%) aplicado!');
-    } else if (code === 'ENVIO_GRATIS') {
-      setAppliedCoupon({ code, type: 'shipping_free', value: 0 });
-      setCouponError('');
-      setCouponInput('');
-      showToast('🎟️ ¡Cupón ENVIO_GRATIS aplicado! Envío bonificado.');
-    } else {
-      setCouponError('Cupón inválido o vencido.');
-      setAppliedCoupon(null);
+    if (!code) { setCouponError('Ingresá un código.'); return; }
+    try {
+      const couponDoc = await getDoc(doc(db, 'coupons', code));
+      if (couponDoc.exists()) {
+        const data = couponDoc.data() as { type: 'discount' | 'shipping_free'; value: number; active?: boolean };
+        if (data.active === false) {
+          setCouponError('Cupón inválido o vencido.');
+          setAppliedCoupon(null);
+          return;
+        }
+        setAppliedCoupon({ code, type: data.type, value: data.value });
+        setCouponError('');
+        setCouponInput('');
+        const pct = data.type === 'discount' ? ` (${Math.round(data.value * 100)}%)` : '';
+        showToast(`🎟️ ¡Cupón ${code}${pct} aplicado!${data.type === 'shipping_free' ? ' Envío bonificado.' : ''}`);
+      } else {
+        setCouponError('Cupón inválido o vencido.');
+        setAppliedCoupon(null);
+      }
+    } catch {
+      setCouponError('Error al verificar cupón. Intentá de nuevo.');
     }
   };
 
@@ -1469,12 +1529,7 @@ const compressImage = (dataUrl: string, maxDim: number = 1024, quality: number =
     }
   };
 
-  const navItemClass = (tab: typeof currentTab) => {
-    const active = currentTab === tab;
-    return `flex flex-col items-center justify-center flex-1 py-1 text-[11px] font-medium transition-all cursor-pointer active:scale-95 touch-manipulation select-none ${
-      active ? 'text-blue-600 font-semibold' : 'text-slate-500 hover:text-slate-600'
-    }`;
-  };
+  // navItemClass eliminado — ahora vive en BottomNav.tsx
 
   return (
     <div className="w-full flex flex-col h-full bg-slate-50 relative overflow-hidden" id="storefront-root">
@@ -1874,7 +1929,7 @@ const compressImage = (dataUrl: string, maxDim: number = 1024, quality: number =
                 </button>
               </div>
 
-              {/* FEATURED OFFERS - "MAS VENDIDOS" SLIDE */} <div className="flex flex-col gap-1.5"> <div className="flex items-center justify-between px-1 mb-1"> <h3 className="text-sm font-extrabold tracking-tight text-slate-800">Categorías</h3> </div> <div className="flex gap-2.5 overflow-x-auto pb-1 select-none no-scrollbar"> {CATS.filter(c => c.id !== 'all').map((c) => ( <button key={c.id} onClick={() => { setCurrentCat(c.id); setCurrentTab('catalog'); }} className="shrink-0 flex flex-col items-center justify-center gap-1 bg-white border border-slate-200 rounded-xl px-4 py-2.5 hover:border-blue-300 hover:text-blue-700 text-slate-700 text-xs font-bold whitespace-nowrap" > {c.name} </button> ))} </div></div>
+              {/* FEATURED OFFERS - "MAS VENDIDOS" SLIDE */} <div className="flex flex-col gap-1.5"> <div className="flex items-center justify-between px-1 mb-1"> <h3 className="text-sm font-extrabold tracking-tight text-slate-800">Categorías</h3> </div> <div className="flex gap-2.5 overflow-x-auto pb-1 select-none no-scrollbar"> {CATS.filter(c => c.id !== 'all' && !HIDDEN_CATS.has(c.id)).map((c) => ( <button key={c.id} onClick={() => { setCurrentCat(c.id); setCurrentTab('catalog'); }} className="shrink-0 flex flex-col items-center justify-center gap-1 bg-white border border-slate-200 rounded-xl px-4 py-2.5 hover:border-blue-300 hover:text-blue-700 text-slate-700 text-xs font-bold whitespace-nowrap" > {c.name} </button> ))} </div></div>
               <div>
                 <div className="flex items-center justify-between px-1 mb-2">
                   <h3 className="text-sm font-extrabold tracking-tight text-slate-800 flex items-center gap-1">
@@ -1909,8 +1964,9 @@ const compressImage = (dataUrl: string, maxDim: number = 1024, quality: number =
                             <img 
                               src={p.image} 
                               alt={p.name} 
-                              className="w-full h-full object-cover animate-fade-in" 
+                              className="w-full h-full object-cover animate-fade-in"
                               referrerPolicy="no-referrer"
+                              loading="lazy"
                               onError={(e) => {
                                 e.currentTarget.onerror = null;
                                 e.currentTarget.src = getFallbackStoreImage(p.name, p.brand, p.cat);
@@ -2133,6 +2189,11 @@ const compressImage = (dataUrl: string, maxDim: number = 1024, quality: number =
                         e.stopPropagation();
                         return;
                       }
+                      // Age-gate: si es categoría de alcohol y no verificó edad, pedir confirmación
+                      if (ALCOHOL_CATS.has(c.id) && !ageVerified) {
+                        setPendingAlcoholCat(c.id);
+                        return;
+                      }
                       setCurrentCat(c.id);
                     }}
                     className={`px-4 py-2 rounded-full text-xs font-black whitespace-nowrap transition-all border ${
@@ -2211,52 +2272,70 @@ const compressImage = (dataUrl: string, maxDim: number = 1024, quality: number =
                     </div>
                   ))}
 
-                  {getFilteredProducts.map((p) => {
-                    const ok = p.inStock;
-                    const qtyInCart = cart[p.id] || 0;
-                    return (
-                      <div 
-                        key={p.id}
-                        onClick={() => isAdminMode ? handleOpenEditFormForProduct(p) : openProdModal(p)}
-                        className={`flex items-center gap-3.5 p-3 hover:bg-slate-50/50 cursor-pointer transition-colors relative ${
-                          !ok ? 'opacity-80 bg-slate-50/30' : ''
-                        }`}
-                      >
-                        <div 
-                          style={{ backgroundColor: CAT_BG[p.cat] || '#f1f5f9' }}
-                          className="w-14 h-14 rounded-xl flex flex-col items-center justify-center shrink-0 font-black relative shadow-inner overflow-hidden"
-                        >
-                          {p.image ? (
-                            <img 
-                              src={p.image} 
-                              alt={p.name} 
-                              className="w-full h-full object-cover animate-fade-in" 
-                              referrerPolicy="no-referrer"
-                              onError={(e) => {
-                                e.currentTarget.onerror = null;
-                                e.currentTarget.src = getFallbackStoreImage(p.name, p.brand, p.cat);
-                              }}
-                            />
-                          ) : (
-                            <>
-                              <span className="text-xl opacity-35">{(p.name || '?')[0].toUpperCase()}</span>
-                              <span className="text-[7px] tracking-wider text-slate-500 uppercase absolute bottom-1 leading-none">
-                                {CAT_ABBR[p.cat] || 'PRD'}
-                              </span>
-                            </>
-                          )}
-                        </div>
+                  {/* ── Lista virtualizada con react-window (cliente) o .map (admin) ── */}
+                  {(() => {
+                    const items = getFilteredProducts;
+                    const ITEM_HEIGHT = 76; // px por fila
+                    const maxVisibleItems = 8;
 
-                        <div className="flex-1 min-w-0 pr-2">
-                          <div className="flex items-center gap-1.5">
-                            <h4 className="text-sm font-bold text-slate-800 leading-tight truncate">{p.name}</h4>
-                            {!isAdminMode && (
+                    // Renderizador de fila para react-window
+                    const VirtualRow = ({ index, style }: { index: number; style: React.CSSProperties }) => {
+                      const p = items[index];
+                      if (!p) return null;
+                      const ok = p.inStock;
+                      const qtyInCart = cart[p.id] || 0;
+
+                      if (isAdminMode) {
+                        return (
+                          <div style={style} key={p.id}
+                            onClick={() => handleOpenEditFormForProduct(p)}
+                            className={`flex items-center gap-3.5 px-3 hover:bg-slate-50/50 cursor-pointer transition-colors relative border-b border-slate-100 ${!ok ? 'opacity-80 bg-slate-50/30' : ''}`}
+                          >
+                            <div style={{ backgroundColor: CAT_BG[p.cat] || '#f1f5f9' }} className="w-14 h-14 rounded-xl flex flex-col items-center justify-center shrink-0 font-black relative shadow-inner overflow-hidden">
+                              {p.image ? <img src={p.image} alt={p.name} className="w-full h-full object-cover" referrerPolicy="no-referrer" loading="lazy" onError={(e) => { e.currentTarget.onerror = null; e.currentTarget.src = getFallbackStoreImage(p.name, p.brand, p.cat); }} /> : <span className="text-xl opacity-35">{(p.name || '?')[0].toUpperCase()}</span>}
+                            </div>
+                            <div className="flex-1 min-w-0 pr-2">
+                              <h4 className="text-sm font-bold text-slate-800 leading-tight truncate">{p.name}</h4>
+                              <p className="text-[10.5px] text-slate-500 font-semibold mt-0.5">{p.brand}</p>
+                              <span className="text-sm font-extrabold text-slate-900">{fmt(p.price)}</span>
+                            </div>
+                            <div className="shrink-0 z-10 flex items-center gap-2" onClick={e => e.stopPropagation()}>
+                              <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-xl p-1 shrink-0">
+                                <button onClick={() => handleQuickToggleInStock(p)} className={`w-8.5 h-4.5 rounded-full p-0.5 transition-colors relative flex items-center cursor-pointer ${p.inStock ? 'bg-emerald-500' : 'bg-slate-300'}`} title={p.inStock ? 'Con stock' : 'Pausado'}>
+                                  <span className={`w-3.5 h-3.5 bg-white rounded-full block shadow transform transition-transform duration-200 ${p.inStock ? 'translate-x-4' : 'translate-x-0'}`} />
+                                </button>
+                                <button onClick={() => handleOpenEditFormForProduct(p)} className="p-1.5 bg-blue-50 text-blue-600 rounded-lg border border-blue-200 hover:bg-blue-100 transition-colors" title="Editar">
+                                  <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
+                                </button>
+                                <button onClick={() => setProductToDelete(p)} className="p-1.5 bg-blue-100 text-blue-600 rounded-lg border border-blue-200 hover:bg-blue-200 transition-colors" title="Eliminar">
+                                  <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
+                                </button>
+                              </div>
+                            </div>
+                          </div>
+                        );
+                      }
+
+                      return (
+                        <div style={style} key={p.id}
+                          onClick={() => openProdModal(p)}
+                          className={`flex items-center gap-3.5 px-3 hover:bg-slate-50/50 cursor-pointer transition-colors relative border-b border-slate-100 ${!ok ? 'opacity-80 bg-slate-50/30' : ''}`}
+                        >
+                          <div style={{ backgroundColor: CAT_BG[p.cat] || '#f1f5f9' }} className="w-14 h-14 rounded-xl flex flex-col items-center justify-center shrink-0 font-black relative shadow-inner overflow-hidden">
+                            {p.image ? <img src={p.image} alt={p.name} className="w-full h-full object-cover animate-fade-in" referrerPolicy="no-referrer" loading="lazy" onError={(e) => { e.currentTarget.onerror = null; e.currentTarget.src = getFallbackStoreImage(p.name, p.brand, p.cat); }} /> : (
+                              <>
+                                <span className="text-xl opacity-35">{(p.name || '?')[0].toUpperCase()}</span>
+                                <span className="text-[7px] tracking-wider text-slate-500 uppercase absolute bottom-1 leading-none">{CAT_ABBR[p.cat] || 'PRD'}</span>
+                              </>
+                            )}
+                          </div>
+                          <div className="flex-1 min-w-0 pr-2">
+                            <div className="flex items-center gap-1.5">
+                              <h4 className="text-sm font-bold text-slate-800 leading-tight truncate">{p.name}</h4>
                               <button
                                 onClick={(e) => { e.stopPropagation(); toggleFavorite(p.id); }}
                                 className="w-11 h-11 -m-2.5 flex items-center justify-center text-slate-500 hover:text-blue-500 active:scale-95 transition-all shrink-0 cursor-pointer"
-                                aria-label={favorites.includes(p.id) ? `Sacar ${p.name} de favoritos` : `Guardar ${p.name} en favoritos`}
-                                aria-pressed={favorites.includes(p.id)}
-                                title={favorites.includes(p.id) ? "Sacar de favoritos" : "Guardar en favoritos"}
+                                aria-label={favorites.includes(p.id) ? `Sacar de favoritos` : `Guardar en favoritos`}
                               >
                                 {favorites.includes(p.id) ? (
                                   <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="currentColor" className="text-blue-500 animate-pulse"><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/></svg>
@@ -2264,89 +2343,49 @@ const compressImage = (dataUrl: string, maxDim: number = 1024, quality: number =
                                   <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/></svg>
                                 )}
                               </button>
-                            )}
+                            </div>
+                            <p className="text-[10.5px] text-slate-500 font-semibold mt-0.5">
+                              {p.brand} {p.orig && <span className="text-[9.5px] text-blue-500 font-bold ml-1.5 uppercase bg-blue-50 px-1 rounded">Oferta</span>}
+                            </p>
+                            <div className="flex items-center gap-2 mt-1">
+                              <span className="text-sm font-extrabold text-slate-900">{fmt(p.price)}</span>
+                              {p.orig && <span className="text-[10px] text-slate-500 line-through font-medium">{fmt(p.orig)}</span>}
+                            </div>
                           </div>
-                          <p className="text-[10.5px] text-slate-500 font-semibold mt-0.5">
-                            {p.brand} {p.orig && <span className="text-[9.5px] text-blue-500 font-bold ml-1.5 uppercase bg-blue-50 px-1 rounded">Oferta</span>}
-                          </p>
-
-                          <div className="flex items-center gap-2 mt-1">
-                            <span className="text-sm font-extrabold text-slate-900">{fmt(p.price)}</span>
-                            {p.orig && (
-                              <span className="text-[10px] text-slate-500 line-through font-medium">
-                                {fmt(p.orig)}
-                              </span>
+                          <div className="shrink-0 z-10 flex items-center gap-2" onClick={e => e.stopPropagation()}>
+                            {!ok ? (
+                              <span className="text-[10px] font-black text-red-600 bg-red-50 border border-red-200 px-2.5 py-1 rounded-lg">Sin Stock</span>
+                            ) : qtyInCart > 0 ? (
+                              <div className="flex items-center gap-1 bg-blue-50 border border-blue-200 rounded-full p-0.5 shadow-sm">
+                                <button onClick={(e) => { e.stopPropagation(); changeQty(p.id, -1); }} className="w-6.5 h-6.5 bg-white rounded-full text-blue-600 flex items-center justify-center font-black active:bg-blue-100 hover:shadow-inner text-sm border border-slate-100">−</button>
+                                <span className="text-xs font-extrabold text-slate-800 w-5 text-center">{qtyInCart}</span>
+                                <button onClick={(e) => { e.stopPropagation(); changeQty(p.id, 1); }} className="w-6.5 h-6.5 bg-white rounded-full text-blue-600 flex items-center justify-center font-black active:bg-blue-100 hover:shadow-inner text-sm border border-slate-100">+</button>
+                              </div>
+                            ) : (
+                              <button onClick={(e) => { e.stopPropagation(); addToCart(p.id); }} className="bg-blue-600 hover:bg-blue-700 text-white rounded-full px-4 py-1.5 text-xs font-black shadow transition-all hover:scale-103 active:scale-97">Agregar</button>
                             )}
                           </div>
                         </div>
+                      );
+                    };
 
-                        {/* Cart adjustment control / Direct Gestor Toggles */}
-                        <div className="shrink-0 z-10 flex items-center gap-2" onClick={e => e.stopPropagation()}>
-                          {isAdminMode ? (
-                            <div className="flex items-center gap-1.5 bg-slate-50 border border-slate-200 rounded-xl p-1 shrink-0">
-                              {/* Stock Switch */}
-                              <button 
-                                onClick={() => handleQuickToggleInStock(p)}
-                                className={`w-8.5 h-4.5 rounded-full p-0.5 transition-colors relative flex items-center cursor-pointer ${p.inStock ? 'bg-emerald-500' : 'bg-slate-300'}`}
-                                title={p.inStock ? 'Con stock - Pausar venta' : 'Pausado - Activar stock'}
-                              >
-                                <span className={`w-3.5 h-3.5 bg-white rounded-full block shadow transform transition-transform duration-200 ${p.inStock ? 'translate-x-4' : 'translate-x-0'}`} />
-                              </button>
-                              
-                              {/* Edit Button */}
-                              <button 
-                                onClick={() => handleOpenEditFormForProduct(p)}
-                                className="p-1.5 bg-blue-50 text-blue-600 rounded-lg border border-blue-200 hover:bg-blue-100 transition-colors"
-                                title="Editar producto"
-                              >
-                                <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.12 2.12 0 0 1 3 3L7 19l-4 1 1-4Z"/></svg>
-                              </button>
+                    // Si hay pocos items, no virtualizar (evita espacio vacío)
+                    if (items.length <= maxVisibleItems) {
+                      return items.map((_, i) => <VirtualRow key={items[i].id} index={i} style={{}} />);
+                    }
 
-                              {/* Delete button */}
-                              <button 
-                                onClick={() => {
-                                  setProductToDelete(p);
-                                }}
-                                className="p-1.5 bg-blue-100 text-blue-600 rounded-lg border border-blue-200 hover:bg-blue-200 transition-colors"
-                                title="Eliminar producto"
-                              >
-                                <svg xmlns="http://www.w3.org/2000/svg" width="11" height="11" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg>
-                              </button>
-                            </div>
-                          ) : !ok ? (
-                            <span className="text-[10px] font-black text-red-600 bg-red-50 border border-red-200 px-2.5 py-1 rounded-lg">
-                              Sin Stock
-                            </span>
-                          ) : qtyInCart > 0 ? (
-                            <div className="flex items-center gap-1 bg-blue-50 border border-blue-200 rounded-full p-0.5 shadow-sm">
-                              <button 
-                                onClick={(e) => { e.stopPropagation(); changeQty(p.id, -1); }}
-                                className="w-6.5 h-6.5 bg-white rounded-full text-blue-600 flex items-center justify-center font-black active:bg-blue-100 hover:shadow-inner text-sm border border-slate-100"
-                              >
-                                −
-                              </button>
-                              <span className="text-xs font-extrabold text-slate-800 w-5 text-center">
-                                {qtyInCart}
-                              </span>
-                              <button 
-                                onClick={(e) => { e.stopPropagation(); changeQty(p.id, 1); }}
-                                className="w-6.5 h-6.5 bg-white rounded-full text-blue-600 flex items-center justify-center font-black active:bg-blue-100 hover:shadow-inner text-sm border border-slate-100"
-                              >
-                                +
-                              </button>
-                            </div>
-                          ) : (
-                            <button 
-                              onClick={(e) => { e.stopPropagation(); addToCart(p.id); }}
-                              className="bg-blue-600 hover:bg-blue-700 text-white rounded-full px-4 py-1.5 text-xs font-black shadow transition-all hover:scale-103 active:scale-97"
-                            >
-                              Agregar
-                            </button>
-                          )}
-                        </div>
-                      </div>
+                    return (
+                      <FixedSizeList
+                        height={Math.min(items.length, maxVisibleItems) * ITEM_HEIGHT}
+                        itemCount={items.length}
+                        itemSize={ITEM_HEIGHT}
+                        width="100%"
+                        overscanCount={5}
+                      >
+                        {VirtualRow}
+                      </FixedSizeList>
                     );
-                  })}
+                  })()}
                   
                   {productsStatus === 'loadingMore' && (
                     <div className="p-4 flex flex-col gap-3">
@@ -2517,8 +2556,9 @@ const compressImage = (dataUrl: string, maxDim: number = 1024, quality: number =
                             <img 
                               src={p.image} 
                               alt={p.name} 
-                              className="w-full h-full object-cover animate-fade-in" 
+                              className="w-full h-full object-cover animate-fade-in"
                               referrerPolicy="no-referrer"
+                              loading="lazy"
                               onError={(e) => {
                                 e.currentTarget.onerror = null;
                                 e.currentTarget.src = getFallbackStoreImage(p.name, p.brand, p.cat);
@@ -2560,6 +2600,16 @@ const compressImage = (dataUrl: string, maxDim: number = 1024, quality: number =
                 </div>
               </div>
             </m.div>
+          )}
+
+          {/* PEDIDOS (HISTORIAL) SCREEN — componente extraído */}
+          {currentTab === 'pedidos' && (
+            <PedidosTab
+              orders={orders}
+              products={products}
+              currentUser={currentUser}
+              addToCart={addToCart}
+            />
           )}
 
           {/* CART SCREEN */}
@@ -2741,8 +2791,9 @@ const compressImage = (dataUrl: string, maxDim: number = 1024, quality: number =
                                   <img 
                                     src={p.image} 
                                     alt={p.name} 
-                                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300" 
+                                    className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
                                     referrerPolicy="no-referrer"
+                                    loading="lazy"
                                     onError={(e) => {
                                       e.currentTarget.onerror = null;
                                       e.currentTarget.src = getFallbackStoreImage(p.name, p.brand, p.cat);
@@ -2987,6 +3038,52 @@ const compressImage = (dataUrl: string, maxDim: number = 1024, quality: number =
 
       {/* CORE MODAL FOR OUT-OF-STOCK PRODUCT AND SIMILAR SUGGESTIONS */}
       <AnimatePresence>
+        {/* Age verification modal — Google Play alcohol policy compliance */}
+        {pendingAlcoholCat && (
+          <Modal
+            id="age-verification-modal"
+            className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center cursor-pointer"
+            onClose={() => setPendingAlcoholCat(null)}
+            labelledBy="age-verification-title"
+          >
+            <div
+              className="bg-white rounded-2xl shadow-xl mx-4 p-6 max-w-sm w-full text-center cursor-default"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="text-4xl mb-3">🔞</div>
+              <h3 id="age-verification-title" className="text-lg font-bold text-slate-800 mb-2">
+                Verificación de edad
+              </h3>
+              <p className="text-sm text-slate-600 mb-5">
+                Esta sección contiene bebidas alcohólicas. Según la ley argentina,
+                la venta de alcohol está prohibida a menores de 18 años.
+              </p>
+              <p className="text-sm font-semibold text-slate-700 mb-4">
+                ¿Confirmás que tenés 18 años o más?
+              </p>
+              <div className="flex gap-3">
+                <button
+                  onClick={() => setPendingAlcoholCat(null)}
+                  className="flex-1 py-2.5 px-4 rounded-xl border border-slate-300 text-slate-600 font-semibold text-sm hover:bg-slate-50"
+                >
+                  No, soy menor
+                </button>
+                <button
+                  onClick={() => {
+                    setAgeVerified(true);
+                    try { sessionStorage.setItem('origenes_age_verified', 'true'); } catch {}
+                    setCurrentCat(pendingAlcoholCat);
+                    setPendingAlcoholCat(null);
+                  }}
+                  className="flex-1 py-2.5 px-4 rounded-xl bg-blue-600 text-white font-semibold text-sm hover:bg-blue-700"
+                >
+                  Sí, tengo +18
+                </button>
+              </div>
+            </div>
+          </Modal>
+        )}
+
         {selectedProduct && (
           <Modal
             id="prod-modal-wrapper"
@@ -3095,8 +3192,9 @@ const compressImage = (dataUrl: string, maxDim: number = 1024, quality: number =
                               <img 
                                 src={p.image} 
                                 alt={p.name} 
-                                className="w-full h-full object-cover animate-fade-in" 
+                                className="w-full h-full object-cover animate-fade-in"
                                 referrerPolicy="no-referrer"
+                                loading="lazy"
                                 onError={(e) => {
                                   e.currentTarget.onerror = null;
                                   e.currentTarget.src = getFallbackStoreImage(p.name, p.brand, p.cat);
@@ -3399,7 +3497,7 @@ const compressImage = (dataUrl: string, maxDim: number = 1024, quality: number =
                     </div>
                   )}
                   <p className="text-[9.5px] text-slate-500 mt-2 font-medium leading-relaxed">
-                    Probá ingresando el cupón <strong className="text-slate-500 select-all font-bold">DESCUENTO10</strong> (10% de descuento total), <strong className="text-slate-500 select-all font-bold">CANDY20</strong> (20%), o <strong className="text-slate-500 select-all font-bold">ENVIO_GRATIS</strong>.
+                    Si tenés un código de cupón, ingresalo arriba para obtener tu descuento.
                   </p>
                 </div>
 
@@ -4827,63 +4925,8 @@ const compressImage = (dataUrl: string, maxDim: number = 1024, quality: number =
         )}
       </AnimatePresence>
 
-      {/* CORE BOTTOM NAV */}
-      <nav className="bnav border-t border-slate-200 bg-white fixed bottom-0 inset-x-0 h-16 flex items-center z-10 shadow-lg select-none">
-        <button 
-          type="button"
-          onClick={() => setCurrentTab('home')} 
-          aria-current={currentTab === 'home' ? 'page' : undefined}
-          className={navItemClass('home')}
-        >
-          <ShoppingBag size={20} />
-          <span>Inicio</span>
-        </button>
-        <button 
-          type="button"
-          onClick={() => setCurrentTab('catalog')} 
-          aria-current={currentTab === 'catalog' ? 'page' : undefined}
-          className={navItemClass('catalog')}
-        >
-          <Search size={20} />
-          <span>Catálogo</span>
-        </button>
-        <button 
-          type="button"
-          onClick={() => setCurrentTab('promos')} 
-          aria-current={currentTab === 'promos' ? 'page' : undefined}
-          className={navItemClass('promos')}
-        >
-          <Star size={20} />
-          <span>Ofertas</span>
-        </button>
-        <button 
-          type="button"
-          onClick={() => setCurrentTab('combos')} 
-          aria-current={currentTab === 'combos' ? 'page' : undefined}
-          className={navItemClass('combos')}
-        >
-          <Clock size={20} />
-          <span>Combos</span>
-        </button>
-        <button 
-          type="button"
-          onClick={() => setCurrentTab('cart')} 
-          aria-current={currentTab === 'cart' ? 'page' : undefined}
-          aria-label={totalItems > 0 ? `Carrito, ${totalItems} ${totalItems === 1 ? 'producto' : 'productos'}` : 'Carrito vacío'}
-          className={navItemClass('cart')}
-        >
-          {/* span y no div: el contenido de un button debe ser phrasing content */}
-          <span className="relative">
-            <ShoppingCart size={20} />
-            {totalItems > 0 && (
-              <span aria-hidden="true" className="absolute -top-1.5 -right-1.5 bg-blue-600 text-white text-[8px] font-bold w-4 h-4 rounded-full flex items-center justify-center">
-                {totalItems}
-              </span>
-            )}
-          </span>
-          <span>Carrito</span>
-        </button>
-      </nav>
+      {/* CORE BOTTOM NAV — componente extraído */}
+      <BottomNav totalItems={totalItems} />
 
       {/* PRODUCT DELETE CONFIRMATION MODAL */}
       <AnimatePresence>
